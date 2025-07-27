@@ -1,0 +1,29 @@
+sequenceDiagram
+    participant Client as Client Application
+    participant Browser as User Browser
+    participant AuthServer as Authorization Server
+    participant ResourceServer as Resource Server
+
+    Note over Client, ResourceServer: OAuth 2.0 Authorization Code Flow with PKCE
+
+    Client->>Client: Generate code_verifier and code_challenge
+    Client->>Browser: Redirect to /authorize with client_id, redirect_uri, scope, code_challenge
+    Browser->>AuthServer: GET /authorize
+    AuthServer->>Browser: Show login page (if not authenticated)
+    Browser->>AuthServer: User credentials
+    AuthServer->>Browser: Show consent page
+    Browser->>AuthServer: User grants consent
+    AuthServer->>Browser: Redirect to redirect_uri with authorization_code
+    Browser->>Client: Return authorization_code
+    Client->>AuthServer: POST /token with authorization_code, code_verifier, client_id
+    AuthServer->>AuthServer: Validate authorization_code and code_verifier
+    AuthServer->>Client: Return access_token, refresh_token, id_token
+    Client->>ResourceServer: API request with access_token
+    ResourceServer->>AuthServer: Validate access_token (introspection or JWT verify)
+    AuthServer->>ResourceServer: Token validation response
+    ResourceServer->>Client: API response
+    
+    Note over Client, AuthServer: Token refresh when access_token expires
+    Client->>AuthServer: POST /token with refresh_token
+    AuthServer->>Client: Return new access_token
+

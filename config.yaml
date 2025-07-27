@@ -1,0 +1,41 @@
+# Authorization Server Configuration
+
+# Database configuration
+database:
+  url: "postgres://authuser:password@localhost:5432/authdb?sslmode=disable"
+
+# Redis configuration
+redis:
+  url: ""
+
+# Server configuration
+server:
+  url: "http://localhost:8080"
+  port: "8080"
+  gin_mode: "debug"
+
+# JWT configuration
+jwt:
+  secret: "your-super-secret-jwt-key-minimum-32-characters-long"
+
+# Security configuration
+security:
+  bcrypt_cost: 12
+  access_token_duration: 3600  # seconds
+  refresh_token_duration: 2592000  # seconds (30 days)
+  authorization_code_duration: 600  # seconds (10 minutes)
+
+# CORS configuration
+cors:
+  allowed_origins: "*"
+  allowed_methods: "GET,POST,PUT,DELETE,OPTIONS"
+  allowed_headers: "Origin,Content-Type,Accept,Authorization"
+
+# Rate limiting configuration
+rate_limit:
+  requests_per_minute: 60
+
+# Logging configuration
+logging:
+  level: "info"
+  format: "text"
