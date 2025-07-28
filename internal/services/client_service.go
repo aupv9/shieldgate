@@ -3,6 +3,7 @@ package services
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"time"
 
@@ -11,7 +12,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
-	"shield1/internal/models"
+	"shieldgate/internal/models"
 )
 
 // ClientService handles OAuth client management
@@ -70,7 +71,7 @@ func (s *ClientService) GetClient(clientID string) (*models.Client, error) {
 	var client models.Client
 	err := s.db.Where("client_id = ?", clientID).First(&client).Error
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, fmt.Errorf("client not found")
 		}
 		return nil, fmt.Errorf("failed to get client: %w", err)
@@ -84,7 +85,7 @@ func (s *ClientService) GetClientByID(id uuid.UUID) (*models.Client, error) {
 	var client models.Client
 	err := s.db.Where("id = ?", id).First(&client).Error
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, fmt.Errorf("client not found")
 		}
 		return nil, fmt.Errorf("failed to get client: %w", err)
@@ -106,13 +107,13 @@ func (s *ClientService) UpdateClient(clientID string, req *models.UpdateClientRe
 		client.Name = req.Name
 	}
 	if req.RedirectURIs != nil {
-		client.RedirectURIs = models.StringArray(req.RedirectURIs)
+		client.RedirectURIs = req.RedirectURIs
 	}
 	if req.GrantTypes != nil {
-		client.GrantTypes = models.StringArray(req.GrantTypes)
+		client.GrantTypes = req.GrantTypes
 	}
 	if req.Scopes != nil {
-		client.Scopes = models.StringArray(req.Scopes)
+		client.Scopes = req.Scopes
 	}
 	if req.IsPublic != nil {
 		client.IsPublic = *req.IsPublic

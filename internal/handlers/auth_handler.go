@@ -9,8 +9,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 
-	"shield1/internal/models"
-	"shield1/internal/services"
+	"shieldgate/internal/models"
+	"shieldgate/internal/services"
 )
 
 // AuthHandler handles OAuth 2.0 and OpenID Connect endpoints

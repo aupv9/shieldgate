@@ -8,7 +8,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
-	"shield1/internal/models"
+	"shieldgate/internal/models"
 )
 
 // Initialize initializes the database connection using GORM

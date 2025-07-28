@@ -9,7 +9,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
-	"shield1/internal/models"
+	"shieldgate/internal/models"
 )
 
 // UserService handles user management

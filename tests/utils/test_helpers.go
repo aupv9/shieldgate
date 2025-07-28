@@ -8,8 +8,8 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
-	"shield1/config"
-	"shield1/internal/models"
+	"shieldgate/config"
+	"shieldgate/internal/models"
 )
 
 // SetupTestDB creates a mock database for testing

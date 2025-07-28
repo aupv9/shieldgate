@@ -9,9 +9,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/bcrypt"
 
-	"shield1/internal/models"
-	"shield1/internal/services"
-	"shield1/tests/utils"
+	"shieldgate/internal/models"
+	"shieldgate/internal/services"
+	"shieldgate/tests/utils"
 )
 
 func TestAuthService_GenerateAuthorizationCode(t *testing.T) {

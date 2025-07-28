@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"shield1/internal/models"
+	"shieldgate/internal/models"
 )
 
 func TestStringArray_Value(t *testing.T) {
@@ -49,7 +49,7 @@ func TestStringArray_Value(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			value, err := tt.array.Value()
-			
+
 			if tt.hasError {
 				assert.Error(t, err)
 			} else {
@@ -109,7 +109,7 @@ func TestStringArray_Scan(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var array models.StringArray
 			err := array.Scan(tt.input)
-			
+
 			if tt.hasError {
 				assert.Error(t, err)
 			} else {

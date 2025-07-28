@@ -14,9 +14,9 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
-	"shield1/config"
-	"shield1/internal/database"
-	"shield1/internal/models"
+	"shieldgate/config"
+	"shieldgate/internal/database"
+	"shieldgate/internal/models"
 )
 
 // AuthService handles OAuth 2.0 authentication and authorization

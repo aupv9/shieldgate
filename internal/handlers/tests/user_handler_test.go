@@ -12,10 +12,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 
-	"shield1/internal/handlers"
-	"shield1/internal/models"
-	"shield1/internal/services"
-	"shield1/tests/utils"
+	"shieldgate/internal/handlers"
+	"shieldgate/internal/models"
+	"shieldgate/internal/services"
+	"shieldgate/tests/utils"
 )
 
 // setupUserHandler creates a test handler with real service

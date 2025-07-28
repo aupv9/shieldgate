@@ -8,10 +8,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"shield1/config"
-	"shield1/internal/models"
-	"shield1/internal/services"
-	"shield1/tests/utils"
+	"shieldgate/config"
+	"shieldgate/internal/models"
+	"shieldgate/internal/services"
+	"shieldgate/tests/utils"
 )
 
 func TestAuthService_AuthorizationCodeFlow_Complete(t *testing.T) {

@@ -13,11 +13,11 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/sirupsen/logrus"
 
-	"shield1/config"
-	"shield1/internal/database"
-	"shield1/internal/handlers"
-	"shield1/internal/middleware"
-	"shield1/internal/services"
+	"shieldgate/config"
+	"shieldgate/internal/database"
+	"shieldgate/internal/handlers"
+	"shieldgate/internal/middleware"
+	"shieldgate/internal/services"
 )
 
 func main() {
@@ -70,9 +70,9 @@ func main() {
 	if cfg.GinMode != "" {
 		gin.SetMode(cfg.GinMode)
 	}
-	
+
 	router := gin.New()
-	
+
 	// Add middleware
 	router.Use(gin.Logger())
 	router.Use(gin.Recovery())

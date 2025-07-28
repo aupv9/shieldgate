@@ -10,21 +10,21 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
 
-	"shield1/config"
-	"shield1/internal/database"
+	"shieldgate/config"
+	"shieldgate/internal/database"
 )
 
 // CORS middleware handles Cross-Origin Resource Sharing
 func CORS(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		origin := c.Request.Header.Get("Origin")
-		
+
 		// Set CORS headers
 		if origin != "" {
 			// Check if origin is allowed
 			allowedOrigins := strings.Split(cfg.CORSAllowedOrigins, ",")
 			originAllowed := false
-			
+
 			for _, allowedOrigin := range allowedOrigins {
 				allowedOrigin = strings.TrimSpace(allowedOrigin)
 				if allowedOrigin == "*" || allowedOrigin == origin {
@@ -32,23 +32,23 @@ func CORS(cfg *config.Config) gin.HandlerFunc {
 					break
 				}
 			}
-			
+
 			if originAllowed {
 				c.Header("Access-Control-Allow-Origin", origin)
 			}
 		}
-		
+
 		c.Header("Access-Control-Allow-Methods", cfg.CORSAllowedMethods)
 		c.Header("Access-Control-Allow-Headers", cfg.CORSAllowedHeaders)
 		c.Header("Access-Control-Allow-Credentials", "true")
 		c.Header("Access-Control-Max-Age", "86400") // 24 hours
-		
+
 		// Handle preflight requests
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(http.StatusNoContent)
 			return
 		}
-		
+
 		c.Next()
 	}
 }
@@ -58,7 +58,7 @@ func RateLimit(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// Get client IP
 		clientIP := getClientIP(c)
-		
+
 		// Get Redis client from context if available
 		redisClient, exists := c.Get("redis")
 		if !exists {
@@ -67,17 +67,17 @@ func RateLimit(cfg *config.Config) gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		
+
 		redis, ok := redisClient.(*database.RedisClient)
 		if !ok {
 			logrus.Warn("Invalid Redis client type, skipping rate limiting")
 			c.Next()
 			return
 		}
-		
+
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		
+
 		// Check current rate limit
 		current, err := redis.GetRateLimit(ctx, clientIP)
 		if err != nil {
@@ -85,7 +85,7 @@ func RateLimit(cfg *config.Config) gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		
+
 		// Check if limit exceeded
 		if current >= int64(cfg.RateLimitRequestsPerMinute) {
 			c.JSON(http.StatusTooManyRequests, gin.H{
@@ -96,17 +96,17 @@ func RateLimit(cfg *config.Config) gin.HandlerFunc {
 			c.Abort()
 			return
 		}
-		
+
 		// Increment rate limit counter
 		if err := redis.SetRateLimit(ctx, clientIP, int64(cfg.RateLimitRequestsPerMinute), time.Minute); err != nil {
 			logrus.Errorf("Failed to set rate limit for %s: %v", clientIP, err)
 		}
-		
+
 		// Add rate limit headers
 		c.Header("X-RateLimit-Limit", fmt.Sprintf("%d", cfg.RateLimitRequestsPerMinute))
 		c.Header("X-RateLimit-Remaining", fmt.Sprintf("%d", int64(cfg.RateLimitRequestsPerMinute)-current-1))
 		c.Header("X-RateLimit-Reset", fmt.Sprintf("%d", time.Now().Add(time.Minute).Unix()))
-		
+
 		c.Next()
 	}
 }
@@ -123,7 +123,7 @@ func Authentication() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
-		
+
 		// Check if it's a Bearer token
 		parts := strings.SplitN(authHeader, " ", 2)
 		if len(parts) != 2 || parts[0] != "Bearer" {
@@ -134,7 +134,7 @@ func Authentication() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
-		
+
 		token := parts[1]
 		if token == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{
@@ -144,7 +144,7 @@ func Authentication() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
-		
+
 		// Store token in context for further processing
 		c.Set("access_token", token)
 		c.Next()
@@ -155,7 +155,7 @@ func Authentication() gin.HandlerFunc {
 func ClientAuthentication() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var clientID, clientSecret string
-		
+
 		// Check for Basic Authentication
 		if authHeader := c.GetHeader("Authorization"); authHeader != "" {
 			if strings.HasPrefix(authHeader, "Basic ") {
@@ -166,11 +166,11 @@ func ClientAuthentication() gin.HandlerFunc {
 				return
 			}
 		}
-		
+
 		// Check for client credentials in form data
 		clientID = c.PostForm("client_id")
 		clientSecret = c.PostForm("client_secret")
-		
+
 		if clientID == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"error":             "invalid_client",
@@ -179,12 +179,12 @@ func ClientAuthentication() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
-		
+
 		// Store client credentials in context
 		c.Set("client_id", clientID)
 		c.Set("client_secret", clientSecret)
 		c.Set("client_auth_method", "post")
-		
+
 		c.Next()
 	}
 }
@@ -198,16 +198,16 @@ func SecurityHeaders() gin.HandlerFunc {
 		c.Header("X-XSS-Protection", "1; mode=block")
 		c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
 		c.Header("Content-Security-Policy", "default-src 'self'")
-		
+
 		// Cache control for sensitive endpoints
-		if strings.HasPrefix(c.Request.URL.Path, "/oauth/") || 
-		   strings.HasPrefix(c.Request.URL.Path, "/api/") ||
-		   strings.HasPrefix(c.Request.URL.Path, "/userinfo") {
+		if strings.HasPrefix(c.Request.URL.Path, "/oauth/") ||
+			strings.HasPrefix(c.Request.URL.Path, "/api/") ||
+			strings.HasPrefix(c.Request.URL.Path, "/userinfo") {
 			c.Header("Cache-Control", "no-store, no-cache, must-revalidate, private")
 			c.Header("Pragma", "no-cache")
 			c.Header("Expires", "0")
 		}
-		
+
 		c.Next()
 	}
 }
@@ -237,7 +237,7 @@ func ErrorHandler() gin.HandlerFunc {
 		} else {
 			logrus.Errorf("Panic recovered: %v", recovered)
 		}
-		
+
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error":             "internal_server_error",
 			"error_description": "An internal server error occurred",
@@ -272,12 +272,12 @@ func getClientIP(c *gin.Context) string {
 			return strings.TrimSpace(ips[0])
 		}
 	}
-	
+
 	// Check X-Real-IP header
 	if xri := c.GetHeader("X-Real-IP"); xri != "" {
 		return strings.TrimSpace(xri)
 	}
-	
+
 	// Fall back to RemoteAddr
 	return c.ClientIP()
 }
