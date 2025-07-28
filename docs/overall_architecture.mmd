@@ -1,0 +1,28 @@
+graph TD
+    subgraph Client Applications
+        A[Web/Mobile/SPA Client] -->|1. Redirect to /authorize| B(Authorization Server)
+    end
+
+    subgraph Authorization Server
+        B --> C{Authentication & Consent}
+        C -->|2. Authorization Code| D[Authorization Service]
+        D -->|3. Token Request to /token| E(Database)
+        D -->|4. Access Token, Refresh Token, ID Token| A
+    end
+
+    subgraph Resource Server
+        F[Resource Server (User's Platform)]
+    end
+
+    A -->|5. Access Resource with Access Token| F
+    F -->|6. Validate Access Token (Introspection/JWT Verify)| D
+    A -->|7. Refresh Token Request to /token| D
+
+    style A fill:#f9f,stroke:#333,stroke-width:2px
+    style B fill:#bbf,stroke:#333,stroke-width:2px
+    style C fill:#ccf,stroke:#333,stroke-width:2px
+    style D fill:#bbf,stroke:#333,stroke-width:2px
+    style E fill:#fcf,stroke:#333,stroke-width:2px
+    style F fill:#9f9,stroke:#333,stroke-width:2px
+
+
