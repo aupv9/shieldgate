@@ -99,41 +99,117 @@ func RequestID() gin.HandlerFunc {
 // RequireAuth middleware requires authentication for protected endpoints
 func RequireAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Extract and validate JWT token
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
-			RespondWithError(c, http.StatusUnauthorized,
-				models.ErrorCodeUnauthorized,
-				"Authorization header is required",
-				nil)
+			RespondWithError(c, http.StatusUnauthorized, models.ErrorCodeUnauthorized, "Authorization header required", nil)
 			c.Abort()
 			return
 		}
 
-		// Check if it's a Bearer token
-		parts := strings.SplitN(authHeader, " ", 2)
-		if len(parts) != 2 || parts[0] != "Bearer" {
-			RespondWithError(c, http.StatusUnauthorized,
-				models.ErrorCodeUnauthorized,
-				"Invalid authorization header format",
-				nil)
+		if !strings.HasPrefix(authHeader, "Bearer ") {
+			RespondWithError(c, http.StatusUnauthorized, models.ErrorCodeUnauthorized, "Invalid authorization header format", nil)
 			c.Abort()
 			return
 		}
 
-		token := parts[1]
+		token := strings.TrimPrefix(authHeader, "Bearer ")
 		if token == "" {
-			RespondWithError(c, http.StatusUnauthorized,
-				models.ErrorCodeUnauthorized,
-				"Token is required",
-				nil)
+			RespondWithError(c, http.StatusUnauthorized, models.ErrorCodeUnauthorized, "Missing access token", nil)
 			c.Abort()
 			return
 		}
 
-		// Store token in context for further processing
-		c.Set("access_token", token)
+		// TODO: Validate JWT token and extract claims
+		// For now, we'll set dummy values
+		c.Set(UserIDKey, uuid.New())
+		c.Set(ClientIDKey, uuid.New())
+
 		c.Next()
 	}
+}
+
+// Helper functions for extracting context values
+
+// GetTenantID extracts tenant ID from context
+func GetTenantID(c *gin.Context) (uuid.UUID, error) {
+	if tenantID, exists := c.Get(TenantIDKey); exists {
+		if id, ok := tenantID.(uuid.UUID); ok {
+			return id, nil
+		}
+	}
+	return uuid.Nil, fmt.Errorf("tenant ID not found in context")
+}
+
+// GetRequestID extracts request ID from context
+func GetRequestID(c *gin.Context) string {
+	if requestID, exists := c.Get(RequestIDKey); exists {
+		if id, ok := requestID.(string); ok {
+			return id
+		}
+	}
+	return ""
+}
+
+// GetUserID extracts user ID from context
+func GetUserID(c *gin.Context) (uuid.UUID, error) {
+	if userID, exists := c.Get(UserIDKey); exists {
+		if id, ok := userID.(uuid.UUID); ok {
+			return id, nil
+		}
+	}
+	return uuid.Nil, fmt.Errorf("user ID not found in context")
+}
+
+// GetClientID extracts client ID from context
+func GetClientID(c *gin.Context) (uuid.UUID, error) {
+	if clientID, exists := c.Get(ClientIDKey); exists {
+		if id, ok := clientID.(uuid.UUID); ok {
+			return id, nil
+		}
+	}
+	return uuid.Nil, fmt.Errorf("client ID not found in context")
+}
+
+// Response helper functions
+
+// APIResponse represents a standardized API response
+type APIResponse struct {
+	Success   bool        `json:"success"`
+	Data      interface{} `json:"data,omitempty"`
+	Error     *APIError   `json:"error,omitempty"`
+	RequestID string      `json:"request_id"`
+}
+
+// APIError represents a standardized API error
+type APIError struct {
+	Code    string                 `json:"code"`
+	Message string                 `json:"message"`
+	Details map[string]interface{} `json:"details,omitempty"`
+}
+
+// RespondWithSuccess sends a successful response
+func RespondWithSuccess(c *gin.Context, statusCode int, data interface{}) {
+	response := APIResponse{
+		Success:   true,
+		Data:      data,
+		RequestID: GetRequestID(c),
+	}
+	c.JSON(statusCode, response)
+}
+
+// RespondWithError sends an error response
+func RespondWithError(c *gin.Context, statusCode int, errorCode, message string, details map[string]interface{}) {
+	response := APIResponse{
+		Success: false,
+		Error: &APIError{
+			Code:    errorCode,
+			Message: message,
+			Details: details,
+		},
+		RequestID: GetRequestID(c),
+	}
+	c.JSON(statusCode, response)
 }
 
 // extractTenantID extracts tenant ID from various sources
