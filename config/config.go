@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/spf13/viper"
@@ -52,20 +53,42 @@ func Load() (*Config, error) {
 	viper.AddConfigPath("./config")
 	viper.AddConfigPath("/etc/auth-server/")
 
-	// Set default values
+	// Set default values FIRST
 	setDefaults()
-
-	// Read a configuration file
-	if err := viper.ReadInConfig(); err != nil {
-		var configFileNotFoundError viper.ConfigFileNotFoundError
-		if errors.As(err, &configFileNotFoundError) {
-			// Config file not found; use defaults
-			fmt.Printf("Warning: Config file not found, using default values\n")
-		}
-	}
 
 	// Allow environment variables to override config file values
 	viper.AutomaticEnv()
+
+	// Map environment variables to config keys BEFORE reading config
+	viper.BindEnv("database.url", "DATABASE_URL")
+	viper.BindEnv("redis.url", "REDIS_URL")
+	viper.BindEnv("server.url", "SERVER_URL")
+	viper.BindEnv("server.port", "PORT")
+	viper.BindEnv("server.gin_mode", "GIN_MODE")
+	viper.BindEnv("jwt.secret", "JWT_SECRET")
+	viper.BindEnv("security.bcrypt_cost", "BCRYPT_COST")
+	viper.BindEnv("security.access_token_duration", "ACCESS_TOKEN_DURATION")
+	viper.BindEnv("security.refresh_token_duration", "REFRESH_TOKEN_DURATION")
+	viper.BindEnv("security.authorization_code_duration", "AUTHORIZATION_CODE_DURATION")
+	viper.BindEnv("cors.allowed_origins", "CORS_ALLOWED_ORIGINS")
+	viper.BindEnv("cors.allowed_methods", "CORS_ALLOWED_METHODS")
+	viper.BindEnv("cors.allowed_headers", "CORS_ALLOWED_HEADERS")
+	viper.BindEnv("rate_limit.requests_per_minute", "RATE_LIMIT_REQUESTS_PER_MINUTE")
+	viper.BindEnv("logging.level", "LOG_LEVEL")
+	viper.BindEnv("logging.format", "LOG_FORMAT")
+
+	// Read a configuration file (optional)
+	if err := viper.ReadInConfig(); err != nil {
+		var configFileNotFoundError viper.ConfigFileNotFoundError
+		if errors.As(err, &configFileNotFoundError) {
+			// Config file not found; use defaults and environment variables
+			fmt.Printf("Warning: Config file not found, using environment variables and defaults\n")
+		}
+	}
+
+	// Debug: Print environment variables
+	fmt.Printf("DEBUG: DATABASE_URL env var: %s\n", os.Getenv("DATABASE_URL"))
+	fmt.Printf("DEBUG: Config database.url: %s\n", viper.GetString("database.url"))
 
 	return &Config{
 		// Database

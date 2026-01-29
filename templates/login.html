@@ -3,162 +3,430 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Authorization Server - Login</title>
+    <title>ShieldGate - Secure Login</title>
     <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        * {
             margin: 0;
             padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             min-height: 100vh;
             display: flex;
             align-items: center;
             justify-content: center;
+            padding: 20px;
         }
+
         .login-container {
             background: white;
-            padding: 2rem;
-            border-radius: 10px;
-            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+            border-radius: 12px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+            padding: 40px;
             width: 100%;
             max-width: 400px;
+            position: relative;
+            overflow: hidden;
         }
-        .login-header {
+
+        .login-container::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 4px;
+            background: linear-gradient(90deg, #667eea, #764ba2);
+        }
+
+        .logo {
             text-align: center;
-            margin-bottom: 2rem;
+            margin-bottom: 30px;
         }
-        .login-header h1 {
+
+        .logo h1 {
             color: #333;
-            margin: 0 0 0.5rem 0;
-            font-size: 1.8rem;
+            font-size: 28px;
+            font-weight: 700;
+            margin-bottom: 8px;
         }
-        .client-info {
+
+        .logo p {
+            color: #666;
+            font-size: 14px;
+        }
+
+        .oauth-info {
             background: #f8f9fa;
-            padding: 1rem;
-            border-radius: 5px;
-            margin-bottom: 1.5rem;
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 24px;
             border-left: 4px solid #667eea;
         }
-        .client-info p {
-            margin: 0;
-            color: #666;
-            font-size: 0.9rem;
-        }
-        .client-name {
-            font-weight: bold;
+
+        .oauth-info h3 {
             color: #333;
+            font-size: 16px;
+            margin-bottom: 8px;
         }
+
+        .oauth-info p {
+            color: #666;
+            font-size: 14px;
+            margin-bottom: 4px;
+        }
+
+        .oauth-info .client-name {
+            font-weight: 600;
+            color: #667eea;
+        }
+
         .form-group {
-            margin-bottom: 1rem;
+            margin-bottom: 20px;
         }
+
         .form-group label {
             display: block;
-            margin-bottom: 0.5rem;
+            margin-bottom: 6px;
             color: #333;
             font-weight: 500;
+            font-size: 14px;
         }
+
         .form-group input {
             width: 100%;
-            padding: 0.75rem;
+            padding: 12px 16px;
             border: 2px solid #e1e5e9;
-            border-radius: 5px;
-            font-size: 1rem;
-            transition: border-color 0.3s;
-            box-sizing: border-box;
+            border-radius: 8px;
+            font-size: 16px;
+            transition: border-color 0.3s ease;
+            background: #fff;
         }
+
         .form-group input:focus {
             outline: none;
             border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
         }
-        .login-button {
+
+        .form-group input.error {
+            border-color: #e74c3c;
+        }
+
+        .error-message {
+            color: #e74c3c;
+            font-size: 14px;
+            margin-top: 6px;
+            display: none;
+        }
+
+        .error-message.show {
+            display: block;
+        }
+
+        .login-btn {
             width: 100%;
-            padding: 0.75rem;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
             border: none;
-            border-radius: 5px;
-            font-size: 1rem;
-            font-weight: 500;
+            padding: 14px 20px;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
             cursor: pointer;
-            transition: transform 0.2s;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+            margin-bottom: 20px;
         }
-        .login-button:hover {
-            transform: translateY(-1px);
+
+        .login-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(102, 126, 234, 0.3);
         }
-        .login-button:active {
+
+        .login-btn:active {
             transform: translateY(0);
         }
-        .scope-info {
-            margin-top: 1.5rem;
-            padding: 1rem;
+
+        .login-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .loading {
+            display: none;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 20px;
+        }
+
+        .loading.show {
+            display: flex;
+        }
+
+        .spinner {
+            width: 20px;
+            height: 20px;
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 10px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .security-info {
+            text-align: center;
+            color: #666;
+            font-size: 12px;
+            line-height: 1.4;
+        }
+
+        .security-info .shield {
+            color: #28a745;
+            margin-right: 4px;
+        }
+
+        .tenant-info {
+            background: #e8f4fd;
+            border: 1px solid #bee5eb;
+            border-radius: 6px;
+            padding: 12px;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
+        .tenant-info .tenant-name {
+            font-weight: 600;
+            color: #0c5460;
+            font-size: 14px;
+        }
+
+        .scope-permissions {
             background: #fff3cd;
             border: 1px solid #ffeaa7;
-            border-radius: 5px;
+            border-radius: 6px;
+            padding: 12px;
+            margin-bottom: 20px;
         }
-        .scope-info h3 {
-            margin: 0 0 0.5rem 0;
+
+        .scope-permissions h4 {
             color: #856404;
-            font-size: 1rem;
+            font-size: 14px;
+            margin-bottom: 8px;
         }
-        .scope-info p {
+
+        .scope-permissions ul {
+            list-style: none;
             margin: 0;
-            color: #856404;
-            font-size: 0.9rem;
+            padding: 0;
         }
-        .error-message {
-            background: #f8d7da;
-            color: #721c24;
-            padding: 0.75rem;
-            border-radius: 5px;
-            margin-bottom: 1rem;
-            border: 1px solid #f5c6cb;
+
+        .scope-permissions li {
+            color: #856404;
+            font-size: 13px;
+            margin-bottom: 4px;
+            padding-left: 16px;
+            position: relative;
+        }
+
+        .scope-permissions li::before {
+            content: '✓';
+            position: absolute;
+            left: 0;
+            color: #28a745;
+            font-weight: bold;
+        }
+
+        @media (max-width: 480px) {
+            .login-container {
+                padding: 30px 20px;
+                margin: 10px;
+            }
         }
     </style>
 </head>
 <body>
     <div class="login-container">
-        <div class="login-header">
-            <h1>Sign In</h1>
+        <div class="logo">
+            <h1>🛡️ ShieldGate</h1>
+            <p>Secure OAuth 2.0 Authorization</p>
         </div>
 
-        <div class="client-info">
-            <p><span class="client-name">{{.client_name}}</span> is requesting access to your account.</p>
+        {{if .tenant_info}}
+        <div class="tenant-info">
+            <div class="tenant-name">{{.tenant_info.name}}</div>
         </div>
+        {{end}}
+
+        {{if .client_name}}
+        <div class="oauth-info">
+            <h3>Authorization Request</h3>
+            <p><span class="client-name">{{.client_name}}</span> is requesting access to your account</p>
+            {{if .redirect_uri}}<p><strong>Redirect:</strong> {{.redirect_uri}}</p>{{end}}
+            {{if .state}}<p><strong>State:</strong> {{.state}}</p>{{end}}
+        </div>
+        {{end}}
+
+        {{if .scope}}
+        <div class="scope-permissions">
+            <h4>This application will be able to:</h4>
+            <ul>
+                {{if contains .scope "read"}}<li>Read your profile information</li>{{end}}
+                {{if contains .scope "write"}}<li>Modify your account data</li>{{end}}
+                {{if contains .scope "openid"}}<li>Verify your identity</li>{{end}}
+                {{if contains .scope "profile"}}<li>Access your profile details</li>{{end}}
+                {{if contains .scope "email"}}<li>Access your email address</li>{{end}}
+            </ul>
+        </div>
+        {{end}}
 
         {{if .error}}
-        <div class="error-message">
+        <div class="error-message show">
             {{.error}}
         </div>
         {{end}}
 
-        <form method="post" action="/oauth/login">
-            <!-- Hidden fields to preserve OAuth parameters -->
+        <form id="loginForm" method="POST" action="/oauth/login">
+            <!-- OAuth parameters -->
             <input type="hidden" name="client_id" value="{{.client_id}}">
             <input type="hidden" name="redirect_uri" value="{{.redirect_uri}}">
             <input type="hidden" name="scope" value="{{.scope}}">
             <input type="hidden" name="state" value="{{.state}}">
             <input type="hidden" name="code_challenge" value="{{.code_challenge}}">
             <input type="hidden" name="code_challenge_method" value="{{.code_challenge_method}}">
+            <input type="hidden" name="response_type" value="code">
 
             <div class="form-group">
-                <label for="username">Username or Email</label>
-                <input type="text" id="username" name="username" required autocomplete="username">
+                <label for="username">Email Address</label>
+                <input type="email" id="username" name="username" required 
+                       placeholder="Enter your email address"
+                       value="{{.username}}" autocomplete="username">
+                <div class="error-message" id="usernameError"></div>
             </div>
 
             <div class="form-group">
                 <label for="password">Password</label>
-                <input type="password" id="password" name="password" required autocomplete="current-password">
+                <input type="password" id="password" name="password" required 
+                       placeholder="Enter your password" autocomplete="current-password">
+                <div class="error-message" id="passwordError"></div>
             </div>
 
-            <button type="submit" class="login-button">Sign In</button>
+            <div class="loading" id="loading">
+                <div class="spinner"></div>
+                <span>Authenticating...</span>
+            </div>
+
+            <button type="submit" class="login-btn" id="loginBtn">
+                Sign In & Authorize
+            </button>
         </form>
 
-        {{if .scope}}
-        <div class="scope-info">
-            <h3>Requested Permissions</h3>
-            <p>This application is requesting access to: <strong>{{.scope}}</strong></p>
+        <div class="security-info">
+            <span class="shield">🔒</span>
+            Secured with OAuth 2.0 + PKCE<br>
+            Your credentials are encrypted and never stored
         </div>
-        {{end}}
     </div>
+
+    <script>
+        document.getElementById('loginForm').addEventListener('submit', function(e) {
+            // Clear previous errors
+            clearErrors();
+            
+            // Get form data
+            const username = document.getElementById('username').value.trim();
+            const password = document.getElementById('password').value;
+            
+            // Basic validation
+            let hasErrors = false;
+            
+            if (!username) {
+                showError('usernameError', 'Email is required');
+                hasErrors = true;
+            } else if (!isValidEmail(username)) {
+                showError('usernameError', 'Please enter a valid email address');
+                hasErrors = true;
+            }
+            
+            if (!password) {
+                showError('passwordError', 'Password is required');
+                hasErrors = true;
+            } else if (password.length < 6) {
+                showError('passwordError', 'Password must be at least 6 characters');
+                hasErrors = true;
+            }
+            
+            if (hasErrors) {
+                e.preventDefault();
+                return;
+            }
+            
+            // Show loading state
+            showLoading(true);
+        });
+        
+        function showError(elementId, message) {
+            const errorElement = document.getElementById(elementId);
+            const inputElement = document.getElementById(elementId.replace('Error', ''));
+            
+            errorElement.textContent = message;
+            errorElement.classList.add('show');
+            inputElement.classList.add('error');
+        }
+        
+        function clearErrors() {
+            const errorElements = document.querySelectorAll('.error-message');
+            const inputElements = document.querySelectorAll('input');
+            
+            errorElements.forEach(el => {
+                el.classList.remove('show');
+                el.textContent = '';
+            });
+            
+            inputElements.forEach(el => {
+                el.classList.remove('error');
+            });
+        }
+        
+        function showLoading(show) {
+            const loading = document.getElementById('loading');
+            const button = document.getElementById('loginBtn');
+            
+            if (show) {
+                loading.classList.add('show');
+                button.disabled = true;
+                button.textContent = 'Signing In...';
+            } else {
+                loading.classList.remove('show');
+                button.disabled = false;
+                button.textContent = 'Sign In & Authorize';
+            }
+        }
+        
+        function isValidEmail(email) {
+            const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+            return emailRegex.test(email);
+        }
+        
+        // Auto-focus first empty field
+        document.addEventListener('DOMContentLoaded', function() {
+            const username = document.getElementById('username');
+            const password = document.getElementById('password');
+            
+            if (!username.value) {
+                username.focus();
+            } else {
+                password.focus();
+            }
+        });
+    </script>
 </body>
 </html>

@@ -1,0 +1,33 @@
+# Development environment override
+version: '3.8'
+
+services:
+  auth-server:
+    build:
+      target: builder
+    environment:
+      - GIN_MODE=debug
+      - LOG_LEVEL=debug
+      - LOG_FORMAT=text
+    volumes:
+      - .:/app
+      - /app/vendor
+    command: go run cmd/auth-server/main.go
+    ports:
+      - "8080:8080"
+      - "2345:2345" # Delve debugger port
+
+  postgres:
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_PASSWORD=dev_password
+
+  redis:
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+
+# Remove nginx and monitoring for development
+profiles:
+  - dev

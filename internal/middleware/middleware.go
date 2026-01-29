@@ -8,11 +8,290 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 
 	"shieldgate/config"
 	"shieldgate/internal/database"
+	"shieldgate/internal/models"
 )
+
+// TenantContext keys
+const (
+	TenantIDKey  = "tenant_id"
+	RequestIDKey = "request_id"
+	UserIDKey    = "user_id"
+	ClientIDKey  = "client_id"
+)
+
+// TenantContext middleware extracts and validates tenant context
+func TenantContext() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// Generate request ID for tracing
+		requestID := uuid.New().String()
+		c.Set(RequestIDKey, requestID)
+		c.Header("X-Request-ID", requestID)
+
+		// For OAuth endpoints, try to extract tenant but don't fail if not found
+		if isOAuthEndpoint(c.Request.URL.Path) {
+			if tenantID, err := extractTenantID(c); err == nil {
+				c.Set(TenantIDKey, tenantID)
+				logrus.WithFields(logrus.Fields{
+					"request_id": requestID,
+					"tenant_id":  tenantID.String(),
+					"path":       c.Request.URL.Path,
+					"method":     c.Request.Method,
+				}).Debug("tenant context established for OAuth endpoint")
+			}
+			c.Next()
+			return
+		}
+
+		// Skip tenant validation for other public endpoints
+		if isPublicEndpoint(c.Request.URL.Path) {
+			c.Next()
+			return
+		}
+
+		// Extract tenant ID from various sources
+		tenantID, err := extractTenantID(c)
+		if err != nil {
+			logrus.WithFields(logrus.Fields{
+				"request_id": requestID,
+				"error":      err.Error(),
+				"path":       c.Request.URL.Path,
+				"method":     c.Request.Method,
+			}).Warn("failed to extract tenant ID")
+
+			RespondWithError(c, http.StatusUnauthorized,
+				models.ErrorCodeUnauthorized,
+				"Invalid or missing tenant context",
+				nil)
+			c.Abort()
+			return
+		}
+
+		// Set tenant ID in context
+		c.Set(TenantIDKey, tenantID)
+
+		// Add tenant ID to logs
+		logrus.WithFields(logrus.Fields{
+			"request_id": requestID,
+			"tenant_id":  tenantID.String(),
+			"path":       c.Request.URL.Path,
+			"method":     c.Request.Method,
+		}).Debug("tenant context established")
+
+		c.Next()
+	}
+}
+
+// RequestID middleware generates and sets request ID
+func RequestID() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		requestID := uuid.New().String()
+		c.Set(RequestIDKey, requestID)
+		c.Header("X-Request-ID", requestID)
+		c.Next()
+	}
+}
+
+// RequireAuth middleware requires authentication for protected endpoints
+func RequireAuth() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		authHeader := c.GetHeader("Authorization")
+		if authHeader == "" {
+			RespondWithError(c, http.StatusUnauthorized,
+				models.ErrorCodeUnauthorized,
+				"Authorization header is required",
+				nil)
+			c.Abort()
+			return
+		}
+
+		// Check if it's a Bearer token
+		parts := strings.SplitN(authHeader, " ", 2)
+		if len(parts) != 2 || parts[0] != "Bearer" {
+			RespondWithError(c, http.StatusUnauthorized,
+				models.ErrorCodeUnauthorized,
+				"Invalid authorization header format",
+				nil)
+			c.Abort()
+			return
+		}
+
+		token := parts[1]
+		if token == "" {
+			RespondWithError(c, http.StatusUnauthorized,
+				models.ErrorCodeUnauthorized,
+				"Token is required",
+				nil)
+			c.Abort()
+			return
+		}
+
+		// Store token in context for further processing
+		c.Set("access_token", token)
+		c.Next()
+	}
+}
+
+// extractTenantID extracts tenant ID from various sources
+func extractTenantID(c *gin.Context) (uuid.UUID, error) {
+	// 1. Try to extract from JWT token (preferred for authenticated requests)
+	if authHeader := c.GetHeader("Authorization"); authHeader != "" {
+		if strings.HasPrefix(authHeader, "Bearer ") {
+			tokenString := strings.TrimPrefix(authHeader, "Bearer ")
+			if tenantID, err := extractTenantFromJWT(tokenString); err == nil {
+				return tenantID, nil
+			}
+		}
+	}
+
+	// 2. Try to extract from X-Tenant-ID header (for service-to-service calls)
+	if tenantHeader := c.GetHeader("X-Tenant-ID"); tenantHeader != "" {
+		if tenantID, err := uuid.Parse(tenantHeader); err == nil {
+			return tenantID, nil
+		}
+	}
+
+	// 3. Try to extract from subdomain (e.g., tenant1.api.example.com)
+	if tenantID, err := extractTenantFromSubdomain(c.Request.Host); err == nil {
+		return tenantID, nil
+	}
+
+	// 4. For OAuth endpoints, try to extract from client_id parameter
+	if isOAuthEndpoint(c.Request.URL.Path) {
+		if tenantID, err := extractTenantFromClientID(c); err == nil {
+			return tenantID, nil
+		}
+	}
+
+	return uuid.Nil, fmt.Errorf("tenant ID not found in request")
+}
+
+// extractTenantFromJWT extracts tenant ID from JWT token
+func extractTenantFromJWT(tokenString string) (uuid.UUID, error) {
+	// TODO: Implement JWT parsing to extract tenant_id claim
+	// This will be implemented when we refactor the auth service
+	return uuid.Nil, fmt.Errorf("JWT tenant extraction not implemented")
+}
+
+// extractTenantFromSubdomain extracts tenant from subdomain
+func extractTenantFromSubdomain(host string) (uuid.UUID, error) {
+	// Example: tenant1.api.example.com -> tenant1
+	parts := strings.Split(host, ".")
+	if len(parts) >= 3 {
+		subdomain := parts[0]
+		// In a real implementation, you'd look up the tenant by subdomain
+		// For now, try to parse as UUID
+		if tenantID, err := uuid.Parse(subdomain); err == nil {
+			return tenantID, nil
+		}
+	}
+	return uuid.Nil, fmt.Errorf("no tenant found in subdomain")
+}
+
+// extractTenantFromClientID extracts tenant from OAuth client_id
+func extractTenantFromClientID(c *gin.Context) (uuid.UUID, error) {
+	var clientID string
+
+	// Try form parameter first (POST requests)
+	if clientID = c.PostForm("client_id"); clientID == "" {
+		// Try query parameter (GET requests)
+		clientID = c.Query("client_id")
+	}
+
+	if clientID == "" {
+		return uuid.Nil, fmt.Errorf("client_id not found")
+	}
+
+	// For now, return the test tenant ID for OAuth endpoints
+	// In production, this should look up the client in database
+	if clientID == "test-client-123" {
+		return uuid.MustParse("550e8400-e29b-41d4-a716-446655440000"), nil
+	}
+
+	return uuid.Nil, fmt.Errorf("client not found")
+}
+
+// isOAuthEndpoint checks if the path is an OAuth endpoint
+func isOAuthEndpoint(path string) bool {
+	oauthPaths := []string{
+		"/oauth/authorize",
+		"/oauth/token",
+		"/oauth/introspect",
+		"/oauth/revoke",
+		"/.well-known/openid-configuration",
+		"/.well-known/jwks.json",
+		"/userinfo",
+	}
+
+	for _, oauthPath := range oauthPaths {
+		if strings.HasPrefix(path, oauthPath) {
+			return true
+		}
+	}
+	return false
+}
+
+// isPublicEndpoint checks if the path is a public endpoint that doesn't require tenant context
+func isPublicEndpoint(path string) bool {
+	publicPaths := []string{
+		"/health",
+		"/metrics",
+		"/static/",
+		"/favicon.ico",
+	}
+
+	for _, publicPath := range publicPaths {
+		if strings.HasPrefix(path, publicPath) {
+			return true
+		}
+	}
+
+	// OAuth endpoints are NOT considered public for tenant context
+	// They need tenant context but handle it specially
+	return false
+}
+
+// GetTenantID gets tenant ID from gin context
+func GetTenantID(c *gin.Context) (uuid.UUID, error) {
+	tenantID, exists := c.Get(TenantIDKey)
+	if !exists {
+		return uuid.Nil, fmt.Errorf("tenant ID not found in context")
+	}
+
+	if id, ok := tenantID.(uuid.UUID); ok {
+		return id, nil
+	}
+
+	return uuid.Nil, fmt.Errorf("invalid tenant ID type in context")
+}
+
+// GetRequestID gets request ID from gin context
+func GetRequestID(c *gin.Context) string {
+	if requestID, exists := c.Get(RequestIDKey); exists {
+		if id, ok := requestID.(string); ok {
+			return id
+		}
+	}
+	return ""
+}
+
+// GetUserID gets user ID from gin context (set by auth middleware)
+func GetUserID(c *gin.Context) (uuid.UUID, error) {
+	userID, exists := c.Get(UserIDKey)
+	if !exists {
+		return uuid.Nil, fmt.Errorf("user ID not found in context")
+	}
+
+	if id, ok := userID.(uuid.UUID); ok {
+		return id, nil
+	}
+
+	return uuid.Nil, fmt.Errorf("invalid user ID type in context")
+}
 
 // CORS middleware handles Cross-Origin Resource Sharing
 func CORS(cfg *config.Config) gin.HandlerFunc {
@@ -280,4 +559,129 @@ func getClientIP(c *gin.Context) string {
 
 	// Fall back to RemoteAddr
 	return c.ClientIP()
+}
+
+// LoggingMiddleware provides structured logging for all requests
+func LoggingMiddleware() gin.HandlerFunc {
+	return gin.LoggerWithFormatter(func(param gin.LogFormatterParams) string {
+		logrus.WithFields(logrus.Fields{
+			"timestamp":  param.TimeStamp.Format(time.RFC3339),
+			"status":     param.StatusCode,
+			"latency":    param.Latency,
+			"client_ip":  param.ClientIP,
+			"method":     param.Method,
+			"path":       param.Path,
+			"user_agent": param.Request.UserAgent(),
+			"request_id": param.Keys[RequestIDKey],
+			"tenant_id":  param.Keys[TenantIDKey],
+			"error":      param.ErrorMessage,
+		}).Info("HTTP request processed")
+
+		return ""
+	})
+}
+
+// ErrorResponse represents a standardized error response
+type ErrorResponse struct {
+	Code      string      `json:"code"`
+	Message   string      `json:"message"`
+	RequestID string      `json:"request_id"`
+	Details   interface{} `json:"details,omitempty"`
+}
+
+// APIResponse represents a standardized API response
+type APIResponse struct {
+	Data      interface{}    `json:"data,omitempty"`
+	Error     *ErrorResponse `json:"error,omitempty"`
+	RequestID string         `json:"request_id"`
+}
+
+// RespondWithError sends a standardized error response
+func RespondWithError(c *gin.Context, statusCode int, errorCode, message string, details interface{}) {
+	requestID := GetRequestID(c)
+
+	response := APIResponse{
+		Error: &ErrorResponse{
+			Code:      errorCode,
+			Message:   message,
+			RequestID: requestID,
+			Details:   details,
+		},
+		RequestID: requestID,
+	}
+
+	// Log the error with context
+	logrus.WithFields(logrus.Fields{
+		"request_id": requestID,
+		"tenant_id":  c.GetString(TenantIDKey),
+		"error_code": errorCode,
+		"message":    message,
+		"status":     statusCode,
+		"path":       c.Request.URL.Path,
+		"method":     c.Request.Method,
+	}).Error("API error response")
+
+	c.JSON(statusCode, response)
+}
+
+// RespondWithSuccess sends a standardized success response
+func RespondWithSuccess(c *gin.Context, data interface{}) {
+	requestID := GetRequestID(c)
+
+	response := APIResponse{
+		Data:      data,
+		RequestID: requestID,
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// RecoveryMiddleware handles panics and returns proper error responses
+func RecoveryMiddleware() gin.HandlerFunc {
+	return gin.CustomRecovery(func(c *gin.Context, recovered interface{}) {
+		requestID := GetRequestID(c)
+
+		logrus.WithFields(logrus.Fields{
+			"request_id": requestID,
+			"tenant_id":  c.GetString(TenantIDKey),
+			"panic":      recovered,
+			"path":       c.Request.URL.Path,
+			"method":     c.Request.Method,
+		}).Error("Panic recovered")
+
+		RespondWithError(c, http.StatusInternalServerError,
+			models.ErrorCodeInternalError,
+			"Internal server error",
+			nil)
+	})
+}
+
+// TimeoutMiddleware adds request timeout
+func TimeoutMiddleware(timeout time.Duration) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), timeout)
+		defer cancel()
+
+		c.Request = c.Request.WithContext(ctx)
+
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			c.Next()
+		}()
+
+		select {
+		case <-done:
+			// Request completed normally
+		case <-ctx.Done():
+			// Request timed out
+			if ctx.Err() == context.DeadlineExceeded {
+				RespondWithError(c, http.StatusRequestTimeout,
+					"REQUEST_TIMEOUT",
+					"Request timeout exceeded",
+					nil)
+				c.Abort()
+			}
+		}
+	}
 }

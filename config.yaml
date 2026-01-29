@@ -2,7 +2,7 @@
 
 # Database configuration
 database:
-  url: "postgres://authuser:password@localhost:5432/authdb?sslmode=disable"
+  url: "postgres://authuser:password@postgres:5432/authdb?sslmode=disable"
 
 # Redis configuration
 redis:

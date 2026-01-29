@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
+	"html/template"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -17,6 +19,7 @@ import (
 	"shieldgate/internal/database"
 	"shieldgate/internal/handlers"
 	"shieldgate/internal/middleware"
+	"shieldgate/internal/repo/gorm"
 	"shieldgate/internal/services"
 )
 
@@ -33,20 +36,20 @@ func main() {
 	}
 
 	// Setup logging
-	setupLogging(cfg)
+	logger := setupLogging(cfg)
 
-	logrus.Info("Starting Authorization Server...")
+	logger.Info("Starting Authorization Server...")
 
 	// Initialize database
+	logger.Info("Connecting to database...")
 	db, err := database.Initialize(cfg.DatabaseURL)
 	if err != nil {
-		logrus.Fatalf("Failed to initialize database: %v", err)
+		logger.Fatalf("Failed to initialize database: %v", err)
 	}
-	// GORM handles connection management automatically
 
 	// Run database migrations
 	if err := database.Migrate(db); err != nil {
-		logrus.Fatalf("Failed to run database migrations: %v", err)
+		logger.Fatalf("Failed to run database migrations: %v", err)
 	}
 
 	// Initialize Redis (optional)
@@ -54,17 +57,21 @@ func main() {
 	if cfg.RedisURL != "" {
 		redisClient, err = database.InitializeRedis(cfg.RedisURL)
 		if err != nil {
-			logrus.Warnf("Failed to initialize Redis: %v", err)
+			logger.Warnf("Failed to initialize Redis: %v", err)
 		} else {
 			defer redisClient.Close()
-			logrus.Info("Redis connection established")
+			logger.Info("Redis connection established")
 		}
 	}
 
+	// Initialize repositories
+	repos := gorm.NewRepositories(db)
+
 	// Initialize services
-	authService := services.NewAuthService(db, redisClient, cfg)
-	clientService := services.NewClientService(db)
-	userService := services.NewUserService(db)
+	tenantService := services.NewTenantService(repos, logger)
+	userService := services.NewUserService(repos, logger)
+	clientService := services.NewClientService(repos, logger)
+	authService := services.NewAuthService(repos, cfg, logger)
 
 	// Setup Gin router
 	if cfg.GinMode != "" {
@@ -78,14 +85,17 @@ func main() {
 	router.Use(gin.Recovery())
 	router.Use(middleware.CORS(cfg))
 	router.Use(middleware.RateLimit(cfg))
+	router.Use(middleware.TenantContext())
+	router.Use(middleware.RequestID())
 
 	// Initialize handlers
-	authHandler := handlers.NewAuthHandler(authService)
-	clientHandler := handlers.NewClientHandler(clientService)
-	userHandler := handlers.NewUserHandler(userService)
+	tenantHandler := handlers.NewTenantHandler(tenantService, logger)
+	userHandler := handlers.NewUserHandler(userService, logger)
+	clientHandler := handlers.NewClientHandler(clientService, logger)
+	oauthHandler := handlers.NewOAuthHandler(tenantService, userService, clientService, authService, logger)
 
 	// Setup routes
-	setupRoutes(router, authHandler, clientHandler, userHandler)
+	setupRoutes(router, tenantHandler, userHandler, clientHandler, oauthHandler)
 
 	// Create HTTP server
 	server := &http.Server{
@@ -98,9 +108,9 @@ func main() {
 
 	// Start server in a goroutine
 	go func() {
-		logrus.Infof("Server starting on port %s", cfg.Port)
+		logger.Infof("Server starting on port %s", cfg.Port)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logrus.Fatalf("Failed to start server: %v", err)
+			logger.Fatalf("Failed to start server: %v", err)
 		}
 	}()
 
@@ -109,38 +119,50 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	logrus.Info("Shutting down server...")
+	logger.Info("Shutting down server...")
 
 	// Give outstanding requests 30 seconds to complete
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	if err := server.Shutdown(ctx); err != nil {
-		logrus.Fatalf("Server forced to shutdown: %v", err)
+		logger.Fatalf("Server forced to shutdown: %v", err)
 	}
 
-	logrus.Info("Server exited")
+	logger.Info("Server exited")
 }
 
-func setupLogging(cfg *config.Config) {
+func setupLogging(cfg *config.Config) *logrus.Logger {
+	logger := logrus.New()
+
 	// Set log level
 	level, err := logrus.ParseLevel(cfg.LogLevel)
 	if err != nil {
 		level = logrus.InfoLevel
 	}
-	logrus.SetLevel(level)
+	logger.SetLevel(level)
 
 	// Set log format
 	if cfg.LogFormat == "json" {
-		logrus.SetFormatter(&logrus.JSONFormatter{})
+		logger.SetFormatter(&logrus.JSONFormatter{
+			TimestampFormat: time.RFC3339,
+		})
 	} else {
-		logrus.SetFormatter(&logrus.TextFormatter{
+		logger.SetFormatter(&logrus.TextFormatter{
 			FullTimestamp: true,
 		})
 	}
+
+	return logger
 }
 
-func setupRoutes(router *gin.Engine, authHandler *handlers.AuthHandler, clientHandler *handlers.ClientHandler, userHandler *handlers.UserHandler) {
+func setupRoutes(
+	router *gin.Engine,
+	tenantHandler *handlers.TenantHandler,
+	userHandler *handlers.UserHandler,
+	clientHandler *handlers.ClientHandler,
+	oauthHandler *handlers.OAuthHandler,
+) {
 	// Health check endpoint
 	router.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
@@ -150,45 +172,32 @@ func setupRoutes(router *gin.Engine, authHandler *handlers.AuthHandler, clientHa
 		})
 	})
 
-	// OAuth 2.0 endpoints
-	oauth := router.Group("/oauth")
-	{
-		oauth.GET("/authorize", authHandler.Authorize)
-		oauth.POST("/token", authHandler.Token)
-		oauth.POST("/introspect", authHandler.Introspect)
-		oauth.POST("/revoke", authHandler.Revoke)
-	}
+	// OAuth 2.0 and OpenID Connect endpoints (no versioning per spec)
+	oauthHandler.RegisterRoutes(router.Group(""))
 
-	// OpenID Connect endpoints
-	router.GET("/.well-known/openid-configuration", authHandler.Discovery)
-	router.GET("/.well-known/jwks.json", authHandler.JWKS)
-	router.GET("/userinfo", authHandler.UserInfo)
-
-	// Management endpoints
-	api := router.Group("/api/v1")
+	// Management API endpoints (versioned)
+	api := router.Group("/v1")
+	api.Use(middleware.RequireAuth()) // Require authentication for management APIs
 	{
-		// Client management
-		clients := api.Group("/clients")
-		{
-			clients.POST("", clientHandler.CreateClient)
-			clients.GET("/:client_id", clientHandler.GetClient)
-			clients.PUT("/:client_id", clientHandler.UpdateClient)
-			clients.DELETE("/:client_id", clientHandler.DeleteClient)
-			clients.GET("", clientHandler.ListClients)
-		}
+		// Tenant management
+		tenantHandler.RegisterRoutes(api.Group("/tenants"))
 
 		// User management
-		users := api.Group("/users")
-		{
-			users.POST("", userHandler.CreateUser)
-			users.GET("/:user_id", userHandler.GetUser)
-			users.PUT("/:user_id", userHandler.UpdateUser)
-			users.DELETE("/:user_id", userHandler.DeleteUser)
-			users.GET("", userHandler.ListUsers)
-		}
+		userHandler.RegisterRoutes(api.Group("/users"))
+
+		// Client management
+		clientHandler.RegisterRoutes(api.Group("/clients"))
 	}
 
 	// Serve static files and templates
 	router.Static("/static", "./static")
+
+	// Add custom template functions
+	router.SetFuncMap(template.FuncMap{
+		"contains": func(s, substr string) bool {
+			return strings.Contains(s, substr)
+		},
+	})
+
 	router.LoadHTMLGlob("templates/*")
 }
