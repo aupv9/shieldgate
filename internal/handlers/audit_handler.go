@@ -35,7 +35,6 @@ func NewAuditHandler(
 func (h *AuditHandler) RegisterRoutes(router *gin.RouterGroup) {
 	// Audit log endpoints
 	audit := router.Group("/v1/audit")
-	audit.Use(middleware.RequireAuth())
 	{
 		audit.GET("/logs", h.QueryAuditLogs)
 		audit.GET("/logs/:audit_id", h.GetAuditLog)

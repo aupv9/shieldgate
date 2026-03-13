@@ -40,7 +40,6 @@ func NewRBACHandler(
 func (h *RBACHandler) RegisterRoutes(router *gin.RouterGroup) {
 	// Role management endpoints
 	roles := router.Group("/v1/roles")
-	roles.Use(middleware.RequireAuth())
 	{
 		roles.POST("", h.CreateRole)
 		roles.GET("", h.ListRoles)
@@ -60,7 +59,6 @@ func (h *RBACHandler) RegisterRoutes(router *gin.RouterGroup) {
 
 	// Permission management endpoints
 	permissions := router.Group("/v1/permissions")
-	permissions.Use(middleware.RequireAuth())
 	{
 		permissions.POST("", h.CreatePermission)
 		permissions.GET("", h.ListPermissions)
@@ -71,7 +69,6 @@ func (h *RBACHandler) RegisterRoutes(router *gin.RouterGroup) {
 
 	// User role endpoints
 	users := router.Group("/v1/users")
-	users.Use(middleware.RequireAuth())
 	{
 		users.GET("/:user_id/roles", h.GetUserRoles)
 		users.GET("/:user_id/permissions", h.GetUserPermissions)

@@ -153,6 +153,14 @@ func (r *RedisClient) Keys(ctx context.Context, pattern string) ([]string, error
 	return r.client.Keys(ctx, pattern).Result()
 }
 
+// Ping checks the connectivity to Redis.
+func (r *RedisClient) Ping(ctx context.Context) error {
+	if r == nil || r.client == nil {
+		return fmt.Errorf("redis client not initialized")
+	}
+	return r.client.Ping(ctx).Err()
+}
+
 // Scan scans keys matching a pattern
 func (r *RedisClient) Scan(ctx context.Context, cursor uint64, match string, count int64) ([]string, uint64, error) {
 	return r.client.Scan(ctx, cursor, match, count).Result()

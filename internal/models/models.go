@@ -14,6 +14,9 @@ import (
 
 // Custom error types for business logic
 var (
+	ErrResourceNotFound         = errors.New("resource not found")
+	ErrDuplicateResource        = errors.New("duplicate resource")
+	ErrBusinessRuleViolation    = errors.New("business rule violation")
 	ErrTenantNotFound          = errors.New("tenant not found")
 	ErrUserNotFound            = errors.New("user not found")
 	ErrClientNotFound          = errors.New("client not found")
@@ -39,6 +42,7 @@ var (
 	ErrEmailNotVerified        = errors.New("email not verified")
 	ErrInvalidVerificationCode = errors.New("invalid verification code")
 	ErrVerificationExpired     = errors.New("verification code expired")
+	ErrPKCEVerificationFailed  = errors.New("pkce verification failed")
 )
 
 // Error codes for API responses
@@ -98,22 +102,25 @@ const (
 	AuditActionClientCreated     AuditAction = "client.created"
 	AuditActionClientUpdated     AuditAction = "client.updated"
 	AuditActionClientDeleted     AuditAction = "client.deleted"
+	AuditActionRoleCreated       AuditAction = "role.created"
+	AuditActionRoleUpdated       AuditAction = "role.updated"
+	AuditActionRoleDeleted       AuditAction = "role.deleted"
 	AuditActionRoleAssigned      AuditAction = "role.assigned"
 	AuditActionRoleRevoked       AuditAction = "role.revoked"
 	AuditActionPermissionGranted AuditAction = "permission.granted"
 	AuditActionPermissionRevoked AuditAction = "permission.revoked"
 )
 
-// Email template types
-type EmailTemplate string
+// Email template types (identifier strings stored/referenced by templates)
+type EmailTemplateType string
 
 const (
-	EmailTemplateWelcome           EmailTemplate = "welcome"
-	EmailTemplateEmailVerification EmailTemplate = "email_verification"
-	EmailTemplatePasswordReset     EmailTemplate = "password_reset"
-	EmailTemplatePasswordChanged   EmailTemplate = "password_changed"
-	EmailTemplateAccountLocked     EmailTemplate = "account_locked"
-	EmailTemplateAccountSuspended  EmailTemplate = "account_suspended"
+	EmailTemplateWelcome           EmailTemplateType = "welcome"
+	EmailTemplateEmailVerification EmailTemplateType = "email_verification"
+	EmailTemplatePasswordReset     EmailTemplateType = "password_reset"
+	EmailTemplatePasswordChanged   EmailTemplateType = "password_changed"
+	EmailTemplateAccountLocked     EmailTemplateType = "account_locked"
+	EmailTemplateAccountSuspended  EmailTemplateType = "account_suspended"
 )
 
 // StringArray represents a PostgreSQL string array

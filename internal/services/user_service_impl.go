@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"shieldgate/internal/models"
 	"shieldgate/internal/repo"
@@ -16,6 +17,11 @@ type userServiceImpl struct {
 	repos  *repo.Repositories
 	logger *logrus.Logger
 }
+
+const (
+	MaxLoginAttempts = 5
+	LockoutDuration  = 30 * time.Minute
+)
 
 // NewUserService creates a new user service implementation
 func NewUserService(repos *repo.Repositories, logger *logrus.Logger) UserService {
@@ -220,8 +226,15 @@ func (s *userServiceImpl) Authenticate(ctx context.Context, tenantID uuid.UUID, 
 		return nil, models.ErrInvalidCredentials
 	}
 
+	// Enforce lockout
+	if user.IsLocked() {
+		return nil, models.ErrUserLocked
+	}
+
 	// Verify password
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
+		_ = s.RecordLoginAttempt(ctx, tenantID, email, "", false)
+
 		s.logger.WithFields(logrus.Fields{
 			"tenant_id": tenantID,
 			"user_id":   user.ID,
@@ -230,6 +243,8 @@ func (s *userServiceImpl) Authenticate(ctx context.Context, tenantID uuid.UUID, 
 		return nil, models.ErrInvalidCredentials
 	}
 
+	_ = s.RecordLoginAttempt(ctx, tenantID, email, "", true)
+
 	s.logger.WithFields(logrus.Fields{
 		"tenant_id": tenantID,
 		"user_id":   user.ID,
@@ -237,6 +252,112 @@ func (s *userServiceImpl) Authenticate(ctx context.Context, tenantID uuid.UUID, 
 	}).Info("user authenticated successfully")
 
 	return user, nil
+}
+
+func (s *userServiceImpl) UpdateStatus(ctx context.Context, tenantID, userID uuid.UUID, status models.UserStatus) error {
+	user, err := s.repos.User.GetByID(ctx, tenantID, userID)
+	if err != nil {
+		return err
+	}
+	user.Status = status
+	user.UpdatedAt = time.Now()
+	return s.repos.User.Update(ctx, user)
+}
+
+func (s *userServiceImpl) LockUser(ctx context.Context, tenantID, userID uuid.UUID, reason string, lockedUntil *time.Time) error {
+	user, err := s.repos.User.GetByID(ctx, tenantID, userID)
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	user.Status = models.UserStatusLocked
+	user.LockedAt = &now
+	user.LockedUntil = lockedUntil
+	user.UpdatedAt = now
+	_ = reason // reserved for audit/eventing; do not persist in user model for now
+	return s.repos.User.Update(ctx, user)
+}
+
+func (s *userServiceImpl) UnlockUser(ctx context.Context, tenantID, userID uuid.UUID) error {
+	user, err := s.repos.User.GetByID(ctx, tenantID, userID)
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	user.Status = models.UserStatusActive
+	user.FailedLoginAttempts = 0
+	user.LockedAt = nil
+	user.LockedUntil = nil
+	user.UpdatedAt = now
+	return s.repos.User.Update(ctx, user)
+}
+
+func (s *userServiceImpl) SuspendUser(ctx context.Context, tenantID, userID uuid.UUID, reason string) error {
+	_ = reason
+	return s.UpdateStatus(ctx, tenantID, userID, models.UserStatusSuspended)
+}
+
+func (s *userServiceImpl) ActivateUser(ctx context.Context, tenantID, userID uuid.UUID) error {
+	return s.UpdateStatus(ctx, tenantID, userID, models.UserStatusActive)
+}
+
+func (s *userServiceImpl) SendVerificationEmail(ctx context.Context, tenantID, userID uuid.UUID) error {
+	return fmt.Errorf("SendVerificationEmail not implemented in UserService; use EmailService")
+}
+
+func (s *userServiceImpl) VerifyEmail(ctx context.Context, tenantID uuid.UUID, code string) (*models.User, error) {
+	return nil, fmt.Errorf("VerifyEmail not implemented in UserService; use EmailService")
+}
+
+func (s *userServiceImpl) RequestPasswordReset(ctx context.Context, tenantID uuid.UUID, email string) error {
+	return fmt.Errorf("RequestPasswordReset not implemented in UserService; use EmailService")
+}
+
+func (s *userServiceImpl) ResetPassword(ctx context.Context, tenantID uuid.UUID, token, newPassword string) (*models.User, error) {
+	return nil, fmt.Errorf("ResetPassword not implemented in UserService; use EmailService")
+}
+
+func (s *userServiceImpl) RecordLoginAttempt(ctx context.Context, tenantID uuid.UUID, email, ipAddress string, success bool) error {
+	user, err := s.repos.User.GetByEmail(ctx, tenantID, email)
+	if err != nil {
+		return nil
+	}
+
+	now := time.Now()
+
+	if success {
+		user.FailedLoginAttempts = 0
+		user.LastLoginAt = &now
+		user.LastLoginIP = ipAddress
+		user.LockedAt = nil
+		user.LockedUntil = nil
+		if user.Status == models.UserStatusLocked {
+			user.Status = models.UserStatusActive
+		}
+		user.UpdatedAt = now
+		return s.repos.User.Update(ctx, user)
+	}
+
+	user.FailedLoginAttempts++
+	user.UpdatedAt = now
+
+	if user.FailedLoginAttempts >= MaxLoginAttempts {
+		lockedUntil := now.Add(LockoutDuration)
+		user.Status = models.UserStatusLocked
+		user.LockedAt = &now
+		user.LockedUntil = &lockedUntil
+	}
+
+	return s.repos.User.Update(ctx, user)
+}
+
+func (s *userServiceImpl) GetLoginHistory(ctx context.Context, tenantID, userID uuid.UUID, limit, offset int) (*models.PaginatedResponse, error) {
+	_ = ctx
+	_ = tenantID
+	_ = userID
+	_ = limit
+	_ = offset
+	return models.NewPaginatedResponse([]interface{}{}, limit, offset, 0), nil
 }
 
 func (s *userServiceImpl) ChangePassword(ctx context.Context, tenantID, userID uuid.UUID, oldPassword, newPassword string) error {

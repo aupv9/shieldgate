@@ -92,8 +92,11 @@ func (s *authServiceImpl) ExchangeAuthorizationCode(ctx context.Context, tenantI
 
 	// Validate PKCE if present
 	if authCode.CodeChallenge != "" {
+		if codeVerifier == "" {
+			return nil, models.ErrPKCEVerificationFailed
+		}
 		if !s.ValidatePKCE(codeVerifier, authCode.CodeChallenge, authCode.CodeChallengeMethod) {
-			return nil, models.ErrInvalidGrant
+			return nil, models.ErrPKCEVerificationFailed
 		}
 	}
 

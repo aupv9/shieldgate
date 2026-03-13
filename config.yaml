@@ -42,8 +42,8 @@ logging:
 
 # SMTP email configuration (leave host empty to disable sending in dev mode)
 smtp:
-  host: ""
-  port: 587
+  host: "localhost"
+  port: 1025
   user: ""
   password: ""
   from: "noreply@shieldgate.com"

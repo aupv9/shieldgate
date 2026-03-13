@@ -48,7 +48,7 @@ func (h *ClientHandler) CreateClient(c *gin.Context) {
 	var req models.CreateClientRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		middleware.RespondWithError(c, http.StatusBadRequest,
-			models.ErrorCodeValidationFailed, "Invalid request body", err.Error())
+			models.ErrorCodeValidationFailed, "Invalid request body", map[string]interface{}{"validation_errors": err.Error()})
 		return
 	}
 
@@ -64,7 +64,7 @@ func (h *ClientHandler) CreateClient(c *gin.Context) {
 		return
 	}
 
-	middleware.RespondWithSuccess(c, client)
+	middleware.RespondWithSuccess(c, http.StatusCreated, client)
 }
 
 // GetClient handles GET /v1/clients/:client_id
@@ -104,7 +104,7 @@ func (h *ClientHandler) GetClient(c *gin.Context) {
 
 	// Don't expose client secret
 	client.ClientSecret = ""
-	middleware.RespondWithSuccess(c, client)
+	middleware.RespondWithSuccess(c, http.StatusOK, client)
 }
 
 // UpdateClient handles PUT /v1/clients/:client_id
@@ -127,7 +127,7 @@ func (h *ClientHandler) UpdateClient(c *gin.Context) {
 	var req models.UpdateClientRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		middleware.RespondWithError(c, http.StatusBadRequest,
-			models.ErrorCodeValidationFailed, "Invalid request body", err.Error())
+			models.ErrorCodeValidationFailed, "Invalid request body", map[string]interface{}{"validation_errors": err.Error()})
 		return
 	}
 
@@ -151,7 +151,7 @@ func (h *ClientHandler) UpdateClient(c *gin.Context) {
 
 	// Don't expose client secret
 	client.ClientSecret = ""
-	middleware.RespondWithSuccess(c, client)
+	middleware.RespondWithSuccess(c, http.StatusOK, client)
 }
 
 // DeleteClient handles DELETE /v1/clients/:client_id
@@ -189,7 +189,7 @@ func (h *ClientHandler) DeleteClient(c *gin.Context) {
 		return
 	}
 
-	middleware.RespondWithSuccess(c, gin.H{"message": "Client deleted successfully"})
+	middleware.RespondWithSuccess(c, http.StatusOK, gin.H{"message": "Client deleted successfully"})
 }
 
 // ListClients handles GET /v1/clients
@@ -223,5 +223,5 @@ func (h *ClientHandler) ListClients(c *gin.Context) {
 		return
 	}
 
-	middleware.RespondWithSuccess(c, response)
+	middleware.RespondWithSuccess(c, http.StatusOK, response)
 }

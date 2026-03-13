@@ -263,17 +263,6 @@ func (s *AuditServiceImpl) CleanupOldLogs(ctx context.Context, olderThan time.Du
 
 // GetSecurityEvents retrieves security-related audit events
 func (s *AuditServiceImpl) GetSecurityEvents(ctx context.Context, tenantID uuid.UUID, limit, offset int) (*models.PaginatedResponse, error) {
-	securityActions := []models.AuditAction{
-		models.AuditActionUserLoginFailed,
-		models.AuditActionUserLocked,
-		models.AuditActionUserSuspended,
-		models.AuditActionTokenRevoked,
-		models.AuditActionPermissionGranted,
-		models.AuditActionPermissionRevoked,
-		models.AuditActionRoleAssigned,
-		models.AuditActionRoleRevoked,
-	}
-
 	query := &models.AuditLogQuery{
 		TenantID: tenantID,
 		Success:  &[]bool{false}[0], // Failed events are more security-relevant

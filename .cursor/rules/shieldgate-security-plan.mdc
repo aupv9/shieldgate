@@ -1,0 +1,32 @@
+---
+description: Security hardening phases, critical fixes, and test coverage expectations for ShieldGate
+alwaysApply: true
+---
+
+# ShieldGate Security Plan & Expectations
+
+- **Phased security hardening**:
+  - Phase 1: Critical security fixes (must ship first).
+    - `RequireAuth` middleware must perform real JWT validation (signature + `exp`, `iat`, `iss`) and extract `sub`, `client_id`, `tenant_id`, `scope` into context; no random UUIDs or dummy identities.
+    - `extractTenantFromJWT` must return the `tenant_id` claim after validation; tenant isolation must never silently fall back to "not implemented".
+    - JWKS endpoint (`/.well-known/jwks.json`) must expose actual key material for OIDC validation (non-empty `keys` array, correct `kty`, `use`, `alg`, `kid`).
+    - OAuth handlers must not contain hardcoded tenant IDs (e.g., `"test-tenant"`); missing tenant context should result in `400 Bad Request`.
+  - Phase 2: Email & configuration completion.
+    - `email_service_impl.go` must actually send SMTP mail (or clear dev-mode stub) using config-backed `SMTP_*` settings.
+    - Sender address and name must come from configuration, not hardcoded literals.
+  - Phase 3: Security-critical tests.
+    - Target ≥ 95% coverage for auth/middleware; ≥ 80% elsewhere, with explicit tests for JWT auth, PKCE, token security, OIDC endpoints, and multi-tenant isolation.
+
+- **JWT and OIDC invariants**:
+  - All protected endpoints using `RequireAuth` must reject invalid, expired, malformed, or tampered tokens with `401 Unauthorized`.
+  - JWKS and discovery endpoints must remain OIDC-compliant so relying parties can validate ID tokens.
+  - Tenant-aware operations must rely on tenant context derived from headers or JWT claims and must not accept cross-tenant access.
+
+- **Email delivery guarantees**:
+  - Email queue processing must either deliver messages to an SMTP server or clearly mark them as failed with retry semantics; silent "no-op" senders are not acceptable.
+  - For local development, default SMTP settings should match the dev stack (e.g., Mailhog on `localhost:1025`).
+
+- **Testing expectations**:
+  - New security-sensitive code (middleware, token handling, tenant isolation, OIDC endpoints) must include tests covering both success and failure paths.
+  - Prefer reusable helpers (e.g., `CreateTestJWT`, `CreateExpiredJWT`, `CreateTamperedJWT`) for token-related tests to keep cases consistent.
+

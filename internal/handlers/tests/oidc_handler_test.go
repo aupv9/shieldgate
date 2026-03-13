@@ -2,9 +2,11 @@ package tests
 
 import (
 	"encoding/json"
+	"html/template"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -32,6 +34,10 @@ func newOIDCRouter(
 
 	handler := handlers.NewOAuthHandler(mockTenant, mockUser, mockClient, mockAuth, logger)
 	r := gin.New()
+	r.SetFuncMap(template.FuncMap{
+		"contains": func(s, substr string) bool { return strings.Contains(s, substr) },
+	})
+	r.LoadHTMLGlob("../../../templates/*")
 	handler.RegisterRoutes(r.Group(""))
 	return r
 }

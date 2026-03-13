@@ -64,7 +64,7 @@ func (h *TenantHandler) CreateTenant(c *gin.Context) {
 		middleware.RespondWithError(c, http.StatusBadRequest,
 			models.ErrorCodeValidationFailed,
 			"Invalid request format",
-			map[string]string{"validation_error": err.Error()})
+			map[string]interface{}{"validation_error": err.Error()})
 		return
 	}
 
@@ -85,7 +85,7 @@ func (h *TenantHandler) CreateTenant(c *gin.Context) {
 			middleware.RespondWithError(c, http.StatusConflict,
 				models.ErrorCodeDuplicateResource,
 				"Tenant with this domain already exists",
-				map[string]string{"domain": req.Domain})
+				map[string]interface{}{"domain": req.Domain})
 			return
 		}
 
@@ -127,7 +127,7 @@ func (h *TenantHandler) GetTenant(c *gin.Context) {
 		middleware.RespondWithError(c, http.StatusBadRequest,
 			models.ErrorCodeInvalidRequest,
 			"Invalid tenant ID format",
-			map[string]string{"tenant_id": idStr})
+			map[string]interface{}{"tenant_id": idStr})
 		return
 	}
 
@@ -137,7 +137,7 @@ func (h *TenantHandler) GetTenant(c *gin.Context) {
 			middleware.RespondWithError(c, http.StatusNotFound,
 				models.ErrorCodeResourceNotFound,
 				"Tenant not found",
-				map[string]string{
+				map[string]interface{}{
 					"resource_type": "tenant",
 					"resource_id":   tenantID.String(),
 				})
@@ -157,7 +157,7 @@ func (h *TenantHandler) GetTenant(c *gin.Context) {
 		return
 	}
 
-	middleware.RespondWithSuccess(c, tenant)
+	middleware.RespondWithSuccess(c, http.StatusCreated, tenant)
 }
 
 // ListTenants retrieves a paginated list of tenants
@@ -205,7 +205,7 @@ func (h *TenantHandler) ListTenants(c *gin.Context) {
 		return
 	}
 
-	middleware.RespondWithSuccess(c, result)
+	middleware.RespondWithSuccess(c, http.StatusOK, result)
 }
 
 // UpdateTenant updates an existing tenant
@@ -229,7 +229,7 @@ func (h *TenantHandler) UpdateTenant(c *gin.Context) {
 		middleware.RespondWithError(c, http.StatusBadRequest,
 			models.ErrorCodeInvalidRequest,
 			"Invalid tenant ID format",
-			map[string]string{"tenant_id": idStr})
+			map[string]interface{}{"tenant_id": idStr})
 		return
 	}
 
@@ -238,7 +238,7 @@ func (h *TenantHandler) UpdateTenant(c *gin.Context) {
 		middleware.RespondWithError(c, http.StatusBadRequest,
 			models.ErrorCodeValidationFailed,
 			"Invalid request format",
-			map[string]string{"validation_error": err.Error()})
+			map[string]interface{}{"validation_error": err.Error()})
 		return
 	}
 
@@ -248,7 +248,7 @@ func (h *TenantHandler) UpdateTenant(c *gin.Context) {
 			middleware.RespondWithError(c, http.StatusNotFound,
 				models.ErrorCodeResourceNotFound,
 				"Tenant not found",
-				map[string]string{
+				map[string]interface{}{
 					"resource_type": "tenant",
 					"resource_id":   tenantID.String(),
 				})
@@ -260,7 +260,7 @@ func (h *TenantHandler) UpdateTenant(c *gin.Context) {
 			middleware.RespondWithError(c, http.StatusConflict,
 				models.ErrorCodeDuplicateResource,
 				"Tenant with this domain already exists",
-				map[string]string{"domain": req.Domain})
+				map[string]interface{}{"domain": req.Domain})
 			return
 		}
 
@@ -284,7 +284,7 @@ func (h *TenantHandler) UpdateTenant(c *gin.Context) {
 		"domain":     tenant.Domain,
 	}).Info("tenant updated successfully")
 
-	middleware.RespondWithSuccess(c, tenant)
+	middleware.RespondWithSuccess(c, http.StatusOK, tenant)
 }
 
 // DeleteTenant deletes a tenant
@@ -305,7 +305,7 @@ func (h *TenantHandler) DeleteTenant(c *gin.Context) {
 		middleware.RespondWithError(c, http.StatusBadRequest,
 			models.ErrorCodeInvalidRequest,
 			"Invalid tenant ID format",
-			map[string]string{"tenant_id": idStr})
+			map[string]interface{}{"tenant_id": idStr})
 		return
 	}
 
@@ -315,7 +315,7 @@ func (h *TenantHandler) DeleteTenant(c *gin.Context) {
 			middleware.RespondWithError(c, http.StatusNotFound,
 				models.ErrorCodeResourceNotFound,
 				"Tenant not found",
-				map[string]string{
+				map[string]interface{}{
 					"resource_type": "tenant",
 					"resource_id":   tenantID.String(),
 				})

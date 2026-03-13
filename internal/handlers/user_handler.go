@@ -49,7 +49,7 @@ func (h *UserHandler) CreateUser(c *gin.Context) {
 	var req models.CreateUserRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		middleware.RespondWithError(c, http.StatusBadRequest,
-			models.ErrorCodeValidationFailed, "Invalid request body", err.Error())
+			models.ErrorCodeValidationFailed, "Invalid request body", map[string]interface{}{"validation_errors": err.Error()})
 		return
 	}
 
@@ -68,7 +68,7 @@ func (h *UserHandler) CreateUser(c *gin.Context) {
 
 	// Don't expose password hash
 	user.PasswordHash = ""
-	middleware.RespondWithSuccess(c, user)
+	middleware.RespondWithSuccess(c, http.StatusCreated, user)
 }
 
 // GetUser handles GET /v1/users/:user_id
@@ -108,7 +108,7 @@ func (h *UserHandler) GetUser(c *gin.Context) {
 
 	// Don't expose password hash
 	user.PasswordHash = ""
-	middleware.RespondWithSuccess(c, user)
+	middleware.RespondWithSuccess(c, http.StatusOK, user)
 }
 
 // UpdateUser handles PUT /v1/users/:user_id
@@ -131,7 +131,7 @@ func (h *UserHandler) UpdateUser(c *gin.Context) {
 	var req models.UpdateUserRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		middleware.RespondWithError(c, http.StatusBadRequest,
-			models.ErrorCodeValidationFailed, "Invalid request body", err.Error())
+			models.ErrorCodeValidationFailed, "Invalid request body", map[string]interface{}{"validation_errors": err.Error()})
 		return
 	}
 
@@ -155,7 +155,7 @@ func (h *UserHandler) UpdateUser(c *gin.Context) {
 
 	// Don't expose password hash
 	user.PasswordHash = ""
-	middleware.RespondWithSuccess(c, user)
+	middleware.RespondWithSuccess(c, http.StatusOK, user)
 }
 
 // DeleteUser handles DELETE /v1/users/:user_id
@@ -193,7 +193,7 @@ func (h *UserHandler) DeleteUser(c *gin.Context) {
 		return
 	}
 
-	middleware.RespondWithSuccess(c, gin.H{"message": "User deleted successfully"})
+	middleware.RespondWithSuccess(c, http.StatusOK, gin.H{"message": "User deleted successfully"})
 }
 
 // ListUsers handles GET /v1/users
@@ -227,7 +227,7 @@ func (h *UserHandler) ListUsers(c *gin.Context) {
 		return
 	}
 
-	middleware.RespondWithSuccess(c, response)
+	middleware.RespondWithSuccess(c, http.StatusOK, response)
 }
 
 // ChangePassword handles POST /v1/users/:user_id/change-password
@@ -250,7 +250,7 @@ func (h *UserHandler) ChangePassword(c *gin.Context) {
 	var req models.ChangePasswordRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		middleware.RespondWithError(c, http.StatusBadRequest,
-			models.ErrorCodeValidationFailed, "Invalid request body", err.Error())
+			models.ErrorCodeValidationFailed, "Invalid request body", map[string]interface{}{"validation_errors": err.Error()})
 		return
 	}
 
@@ -277,5 +277,5 @@ func (h *UserHandler) ChangePassword(c *gin.Context) {
 		return
 	}
 
-	middleware.RespondWithSuccess(c, gin.H{"message": "Password changed successfully"})
+	middleware.RespondWithSuccess(c, http.StatusOK, gin.H{"message": "Password changed successfully"})
 }

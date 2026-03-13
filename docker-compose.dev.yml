@@ -9,6 +9,8 @@ services:
       - GIN_MODE=debug
       - LOG_LEVEL=debug
       - LOG_FORMAT=text
+      - SMTP_HOST=mailhog
+      - SMTP_PORT=1025
     volumes:
       - .:/app
       - /app/vendor
@@ -27,6 +29,13 @@ services:
     ports:
       - "6379:6379"
     command: redis-server --appendonly yes
+
+  mailhog:
+    image: mailhog/mailhog:latest
+    ports:
+      - "1025:1025"   # SMTP
+      - "8025:8025"   # Web UI
+    restart: unless-stopped
 
 # Remove nginx and monitoring for development
 profiles:

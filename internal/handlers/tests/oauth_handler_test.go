@@ -3,6 +3,7 @@ package tests
 import (
 	"context"
 	"encoding/json"
+	"html/template"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -275,6 +276,9 @@ func TestOAuthHandler_HandleAuthorize_Success(t *testing.T) {
 
 	// Setup router
 	router := gin.New()
+	router.SetFuncMap(template.FuncMap{
+		"contains": func(s, substr string) bool { return strings.Contains(s, substr) },
+	})
 	router.LoadHTMLGlob("../../../templates/*")
 
 	// Add tenant context middleware for testing
@@ -326,6 +330,7 @@ func TestOAuthHandler_HandleLogin_Success(t *testing.T) {
 	userID := uuid.New()
 	clientID := "test-client-id"
 	redirectURI := "http://localhost:3000/callback"
+	clientUUID := uuid.New()
 
 	user := &models.User{
 		ID:       userID,
@@ -338,13 +343,21 @@ func TestOAuthHandler_HandleLogin_Success(t *testing.T) {
 		ID:       uuid.New(),
 		TenantID: tenantID,
 		Code:     "test-auth-code",
-		ClientID: uuid.MustParse(clientID),
+		ClientID: clientUUID,
 		UserID:   userID,
 	}
 
 	// Setup mocks
-	mockUserService.On("GetByEmail", mock.Anything, tenantID, "test@example.com").Return(user, nil)
-	mockAuthService.On("GenerateAuthorizationCode", mock.Anything, tenantID, mock.AnythingOfType("uuid.UUID"), userID, redirectURI, "read", "test-challenge", "S256").Return(authCode, nil)
+	mockUserService.On("Authenticate", mock.Anything, tenantID, "test@example.com", "password123").Return(user, nil)
+	mockClientService.On("GetByClientID", mock.Anything, tenantID, clientID).Return(&models.Client{
+		ID:           clientUUID,
+		TenantID:     tenantID,
+		ClientID:     clientID,
+		Name:         "Test Client",
+		RedirectURIs: models.StringArray{redirectURI},
+	}, nil)
+	mockClientService.On("ValidateRedirectURI", mock.Anything, mock.AnythingOfType("*models.Client"), redirectURI).Return(nil)
+	mockAuthService.On("GenerateAuthorizationCode", mock.Anything, tenantID, clientUUID, userID, redirectURI, "read", "test-challenge", "S256").Return(authCode, nil)
 
 	// Setup router
 	router := gin.New()

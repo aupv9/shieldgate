@@ -14,12 +14,13 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 	"github.com/sirupsen/logrus"
+	"gorm.io/gorm"
 
 	"shieldgate/config"
 	"shieldgate/internal/database"
 	"shieldgate/internal/handlers"
 	"shieldgate/internal/middleware"
-	"shieldgate/internal/repo/gorm"
+	gormrepo "shieldgate/internal/repo/gorm"
 	"shieldgate/internal/services"
 )
 
@@ -39,6 +40,10 @@ func main() {
 	logger := setupLogging(cfg)
 
 	logger.Info("Starting Authorization Server...")
+
+	// Initialize root context for background workers (cancelled on shutdown)
+	rootCtx, cancelRoot := context.WithCancel(context.Background())
+	defer cancelRoot()
 
 	// Initialize database
 	logger.Info("Connecting to database...")
@@ -65,13 +70,42 @@ func main() {
 	}
 
 	// Initialize repositories
-	repos := gorm.NewRepositories(db)
+	repos := gormrepo.NewRepositories(db)
 
 	// Initialize services
+	auditService := services.NewAuditService(repos.AuditLog, logger)
+	emailService := services.NewEmailService(
+		repos.EmailTemplate,
+		repos.EmailQueue,
+		repos.EmailVerification,
+		repos.PasswordReset,
+		repos.User,
+		auditService,
+		cfg,
+		logger,
+	)
 	tenantService := services.NewTenantService(repos, logger)
 	userService := services.NewUserService(repos, logger)
 	clientService := services.NewClientService(repos, logger)
 	authService := services.NewAuthService(repos, cfg, logger)
+
+	// Start background email queue processor
+	go func() {
+		ticker := time.NewTicker(1 * time.Minute)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-rootCtx.Done():
+				logger.Info("Email queue processor shutting down")
+				return
+			case <-ticker.C:
+				if err := emailService.ProcessQueue(rootCtx); err != nil {
+					logger.WithError(err).Error("Failed to process email queue")
+				}
+			}
+		}
+	}()
 
 	// Setup Gin router
 	if cfg.GinMode != "" {
@@ -95,7 +129,7 @@ func main() {
 	oauthHandler := handlers.NewOAuthHandler(tenantService, userService, clientService, authService, logger)
 
 	// Setup routes
-	setupRoutes(router, tenantHandler, userHandler, clientHandler, oauthHandler)
+	setupRoutes(cfg, db, redisClient, router, tenantHandler, userHandler, clientHandler, oauthHandler)
 
 	// Create HTTP server
 	server := &http.Server{
@@ -121,9 +155,12 @@ func main() {
 
 	logger.Info("Shutting down server...")
 
+	// Cancel background workers
+	cancelRoot()
+
 	// Give outstanding requests 30 seconds to complete
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer shutdownCancel()
 
 	if err := server.Shutdown(ctx); err != nil {
 		logger.Fatalf("Server forced to shutdown: %v", err)
@@ -157,6 +194,9 @@ func setupLogging(cfg *config.Config) *logrus.Logger {
 }
 
 func setupRoutes(
+	cfg *config.Config,
+	db *gorm.DB,
+	redisClient *database.RedisClient,
 	router *gin.Engine,
 	tenantHandler *handlers.TenantHandler,
 	userHandler *handlers.UserHandler,
@@ -165,10 +205,42 @@ func setupRoutes(
 ) {
 	// Health check endpoint
 	router.GET("/health", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{
-			"status":    "healthy",
-			"timestamp": time.Now().UTC(),
-			"version":   "1.0.0",
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
+		defer cancel()
+
+		status := "ok"
+		dbStatus := "ok"
+		redisStatus := "ok"
+		httpStatus := http.StatusOK
+
+		if db != nil {
+			sqlDB, err := db.DB()
+			if err != nil || sqlDB.PingContext(ctx) != nil {
+				dbStatus = "error"
+				status = "degraded"
+				httpStatus = http.StatusServiceUnavailable
+			}
+		} else {
+			dbStatus = "disabled"
+		}
+
+		if redisClient == nil {
+			redisStatus = "disabled"
+		} else {
+			if err := redisClient.Ping(ctx); err != nil {
+				redisStatus = "error"
+				status = "degraded"
+				httpStatus = http.StatusServiceUnavailable
+			}
+		}
+
+		c.JSON(httpStatus, gin.H{
+			"status":      status,
+			"db":          dbStatus,
+			"redis":       redisStatus,
+			"timestamp":   time.Now().UTC(),
+			"version":     "1.0.0",
+			"environment": cfg.GinMode,
 		})
 	})
 

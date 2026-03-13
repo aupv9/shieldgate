@@ -13,7 +13,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
-	"golang.org/x/crypto/bcrypt"
 )
 
 // OAuthHandler handles OAuth 2.0 authorization flows
@@ -176,11 +175,28 @@ func (h *OAuthHandler) HandleLogin(c *gin.Context) {
 		return
 	}
 
+	// Load client and validate redirect URI (client_id is the public identifier, not UUID)
+	client, err := h.clientService.GetByClientID(c.Request.Context(), tenantID, clientID)
+	if err != nil {
+		h.logger.WithError(err).WithFields(logrus.Fields{
+			"tenant_id": tenantID,
+			"client_id": clientID,
+		}).Error("client validation failed during login")
+		h.renderError(c, "invalid_client", "Invalid client", redirectURI)
+		return
+	}
+
+	if err := h.clientService.ValidateRedirectURI(c.Request.Context(), client, redirectURI); err != nil {
+		h.logger.WithError(err).WithField("redirect_uri", redirectURI).Error("invalid redirect URI during login")
+		h.renderError(c, "invalid_request", "Invalid redirect URI", "")
+		return
+	}
+
 	// Generate authorization code
 	authCode, err := h.authService.GenerateAuthorizationCode(
 		c.Request.Context(),
 		tenantID,
-		uuid.MustParse(clientID),
+		client.ID,
 		user.ID,
 		redirectURI,
 		scope,
@@ -278,6 +294,13 @@ func (h *OAuthHandler) handleAuthorizationCodeGrant(c *gin.Context, tenantID uui
 	)
 	if err != nil {
 		h.logger.WithError(err).Error("token exchange failed")
+		if err == models.ErrPKCEVerificationFailed {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":             "invalid_grant",
+				"error_description": "PKCE verification failed",
+			})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":             "invalid_grant",
 			"error_description": "Authorization code is invalid or expired",
@@ -463,18 +486,7 @@ func (h *OAuthHandler) HandleRevoke(c *gin.Context) {
 // Helper methods
 
 func (h *OAuthHandler) authenticateUser(ctx context.Context, tenantID uuid.UUID, username, password string) (*models.User, error) {
-	// Get user by email
-	user, err := h.userService.GetByEmail(ctx, tenantID, username)
-	if err != nil {
-		return nil, err
-	}
-
-	// Verify password
-	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
-		return nil, models.ErrInvalidCredentials
-	}
-
-	return user, nil
+	return h.userService.Authenticate(ctx, tenantID, username, password)
 }
 
 func (h *OAuthHandler) renderLoginPage(c *gin.Context, req *models.AuthorizeRequest, client *models.Client, tenant *models.Tenant, errorMsg ...string) {
