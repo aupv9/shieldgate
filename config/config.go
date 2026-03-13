@@ -42,6 +42,15 @@ type Config struct {
 	// Logging
 	LogLevel  string
 	LogFormat string
+
+	// SMTP (email sending)
+	SMTPHost     string
+	SMTPPort     int
+	SMTPUser     string
+	SMTPPassword string
+	SMTPFrom     string
+	SMTPFromName string
+	SMTPUseTLS   bool
 }
 
 // Load loads configuration from YAML file
@@ -76,6 +85,13 @@ func Load() (*Config, error) {
 	viper.BindEnv("rate_limit.requests_per_minute", "RATE_LIMIT_REQUESTS_PER_MINUTE")
 	viper.BindEnv("logging.level", "LOG_LEVEL")
 	viper.BindEnv("logging.format", "LOG_FORMAT")
+	viper.BindEnv("smtp.host", "SMTP_HOST")
+	viper.BindEnv("smtp.port", "SMTP_PORT")
+	viper.BindEnv("smtp.user", "SMTP_USER")
+	viper.BindEnv("smtp.password", "SMTP_PASSWORD")
+	viper.BindEnv("smtp.from", "SMTP_FROM")
+	viper.BindEnv("smtp.from_name", "SMTP_FROM_NAME")
+	viper.BindEnv("smtp.use_tls", "SMTP_USE_TLS")
 
 	// Read a configuration file (optional)
 	if err := viper.ReadInConfig(); err != nil {
@@ -122,6 +138,15 @@ func Load() (*Config, error) {
 		// Logging
 		LogLevel:  viper.GetString("logging.level"),
 		LogFormat: viper.GetString("logging.format"),
+
+		// SMTP
+		SMTPHost:     viper.GetString("smtp.host"),
+		SMTPPort:     viper.GetInt("smtp.port"),
+		SMTPUser:     viper.GetString("smtp.user"),
+		SMTPPassword: viper.GetString("smtp.password"),
+		SMTPFrom:     viper.GetString("smtp.from"),
+		SMTPFromName: viper.GetString("smtp.from_name"),
+		SMTPUseTLS:   viper.GetBool("smtp.use_tls"),
 	}, nil
 }
 
@@ -158,4 +183,13 @@ func setDefaults() {
 	// Logging defaults
 	viper.SetDefault("logging.level", "info")
 	viper.SetDefault("logging.format", "text")
+
+	// SMTP defaults
+	viper.SetDefault("smtp.host", "")
+	viper.SetDefault("smtp.port", 587)
+	viper.SetDefault("smtp.user", "")
+	viper.SetDefault("smtp.password", "")
+	viper.SetDefault("smtp.from", "noreply@shieldgate.com")
+	viper.SetDefault("smtp.from_name", "ShieldGate")
+	viper.SetDefault("smtp.use_tls", false)
 }

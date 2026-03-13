@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
@@ -55,6 +56,58 @@ func CreateTestUserWithPassword(password string) *models.User {
 		CreatedAt:    time.Now(),
 		UpdatedAt:    time.Now(),
 	}
+}
+
+// CreateTestJWT generates a valid signed JWT for use in tests.
+func CreateTestJWT(cfg *config.Config, userID, clientID, tenantID uuid.UUID, scope string) string {
+	claims := &models.JWTClaims{
+		Sub:      userID.String(),
+		Aud:      clientID.String(),
+		Iss:      cfg.ServerURL,
+		Exp:      time.Now().Add(cfg.AccessTokenDuration).Unix(),
+		Iat:      time.Now().Unix(),
+		TenantID: tenantID.String(),
+		Scope:    scope,
+		ClientID: clientID.String(),
+		UserID:   userID.String(),
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	signed, _ := token.SignedString([]byte(cfg.JWTSecret))
+	return signed
+}
+
+// CreateExpiredJWT generates a JWT that is already expired.
+func CreateExpiredJWT(cfg *config.Config, userID, clientID, tenantID uuid.UUID) string {
+	claims := &models.JWTClaims{
+		Sub:      userID.String(),
+		Aud:      clientID.String(),
+		Iss:      cfg.ServerURL,
+		Exp:      time.Now().Add(-1 * time.Hour).Unix(), // expired
+		Iat:      time.Now().Add(-2 * time.Hour).Unix(),
+		TenantID: tenantID.String(),
+		ClientID: clientID.String(),
+		UserID:   userID.String(),
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	signed, _ := token.SignedString([]byte(cfg.JWTSecret))
+	return signed
+}
+
+// CreateTamperedJWT generates a valid-looking JWT signed with a different secret.
+func CreateTamperedJWT(cfg *config.Config, userID, clientID, tenantID uuid.UUID) string {
+	claims := &models.JWTClaims{
+		Sub:      userID.String(),
+		Aud:      clientID.String(),
+		Iss:      cfg.ServerURL,
+		Exp:      time.Now().Add(cfg.AccessTokenDuration).Unix(),
+		Iat:      time.Now().Unix(),
+		TenantID: tenantID.String(),
+		ClientID: clientID.String(),
+		UserID:   userID.String(),
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	signed, _ := token.SignedString([]byte("wrong-secret-key-that-does-not-match"))
+	return signed
 }
 
 // CreateTestClient creates a test OAuth client
