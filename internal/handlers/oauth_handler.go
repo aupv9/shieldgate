@@ -67,26 +67,13 @@ func (h *OAuthHandler) RegisterRoutes(router *gin.RouterGroup) {
 
 // HandleAuthorize handles OAuth authorization requests (GET)
 func (h *OAuthHandler) HandleAuthorize(c *gin.Context) {
-	// Try to get tenant context, if not available, extract from client_id
+	// Tenant context must be established by TenantContext middleware.
+	// For OAuth endpoints, provide X-Tenant-ID header or use a valid JWT with tenant_id claim.
 	tenantID, err := middleware.GetTenantID(c)
 	if err != nil {
-		// Extract tenant from client_id parameter
-		clientID := c.Query("client_id")
-		if clientID == "" {
-			h.logger.Error("client_id parameter is required")
-			h.renderError(c, "invalid_request", "client_id parameter is required", "")
-			return
-		}
-
-		// For now, use hardcoded tenant for test client
-		if clientID == "test-client-123" {
-			tenantID = uuid.MustParse("550e8400-e29b-41d4-a716-446655440000")
-			c.Set(middleware.TenantIDKey, tenantID)
-		} else {
-			h.logger.WithField("client_id", clientID).Error("client not found or invalid tenant")
-			h.renderError(c, "invalid_client", "Invalid client", "")
-			return
-		}
+		h.logger.WithError(err).Warn("missing tenant context on authorize endpoint")
+		h.renderError(c, "invalid_request", "Tenant context required — provide X-Tenant-ID header", "")
+		return
 	}
 
 	// Parse authorization request
@@ -144,26 +131,14 @@ func (h *OAuthHandler) HandleAuthorize(c *gin.Context) {
 
 // HandleLogin handles login form submission
 func (h *OAuthHandler) HandleLogin(c *gin.Context) {
-	// Try to get tenant context, if not available, extract from client_id
 	tenantID, err := middleware.GetTenantID(c)
 	if err != nil {
-		// Extract tenant from client_id parameter
-		clientID := c.PostForm("client_id")
-		if clientID == "" {
-			h.logger.Error("client_id parameter is required")
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
-			return
-		}
-
-		// For now, use hardcoded tenant for test client
-		if clientID == "test-client-123" {
-			tenantID = uuid.MustParse("550e8400-e29b-41d4-a716-446655440000")
-			c.Set(middleware.TenantIDKey, tenantID)
-		} else {
-			h.logger.WithField("client_id", clientID).Error("client not found or invalid tenant")
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_client"})
-			return
-		}
+		h.logger.WithError(err).Warn("missing tenant context on login endpoint")
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":             "invalid_request",
+			"error_description": "Tenant context required — provide X-Tenant-ID header",
+		})
+		return
 	}
 
 	// Get form data
@@ -245,32 +220,14 @@ func (h *OAuthHandler) HandleLogin(c *gin.Context) {
 
 // HandleToken handles token exchange requests
 func (h *OAuthHandler) HandleToken(c *gin.Context) {
-	// Try to get tenant context, if not available, extract from client_id
 	tenantID, err := middleware.GetTenantID(c)
 	if err != nil {
-		// Extract tenant from client_id parameter
-		clientID := c.PostForm("client_id")
-		if clientID == "" {
-			h.logger.Error("client_id parameter is required")
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error":             "invalid_request",
-				"error_description": "client_id parameter is required",
-			})
-			return
-		}
-
-		// For now, use hardcoded tenant for test client
-		if clientID == "test-client-123" {
-			tenantID = uuid.MustParse("550e8400-e29b-41d4-a716-446655440000")
-			c.Set(middleware.TenantIDKey, tenantID)
-		} else {
-			h.logger.WithField("client_id", clientID).Error("client not found or invalid tenant")
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"error":             "invalid_client",
-				"error_description": "Invalid client",
-			})
-			return
-		}
+		h.logger.WithError(err).Warn("missing tenant context on token endpoint")
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":             "invalid_request",
+			"error_description": "Tenant context required — provide X-Tenant-ID header",
+		})
+		return
 	}
 
 	grantType := c.PostForm("grant_type")
@@ -435,33 +392,32 @@ func (h *OAuthHandler) HandleDiscovery(c *gin.Context) {
 	c.JSON(http.StatusOK, discovery)
 }
 
-// HandleJWKS handles JWKS endpoint
+// HandleJWKS handles JWKS endpoint.
+// This server uses HS256 (symmetric HMAC). The shared secret is never exposed via JWKS.
+// The entry below advertises the signing algorithm so OIDC discovery clients can read
+// key metadata. Token validation requires the shared JWT secret (out-of-band).
 func (h *OAuthHandler) HandleJWKS(c *gin.Context) {
-	// TODO: Implement JWKS endpoint
 	c.JSON(http.StatusOK, gin.H{
-		"keys": []gin.H{},
+		"keys": []gin.H{
+			{
+				"kty": "oct",
+				"use": "sig",
+				"alg": "HS256",
+				"kid": "default",
+			},
+		},
 	})
 }
 
 // HandleIntrospect handles token introspection
 func (h *OAuthHandler) HandleIntrospect(c *gin.Context) {
-	// Try to get tenant context, if not available, extract from client_id
 	tenantID, err := middleware.GetTenantID(c)
 	if err != nil {
-		// Extract tenant from client_id parameter
-		clientID := c.PostForm("client_id")
-		if clientID == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
-			return
-		}
-
-		// For now, use hardcoded tenant for test client
-		if clientID == "test-client-123" {
-			tenantID = uuid.MustParse("550e8400-e29b-41d4-a716-446655440000")
-		} else {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_client"})
-			return
-		}
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":             "invalid_request",
+			"error_description": "Tenant context required — provide X-Tenant-ID header",
+		})
+		return
 	}
 
 	token := c.PostForm("token")

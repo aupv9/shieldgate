@@ -85,7 +85,7 @@ func main() {
 	router.Use(gin.Recovery())
 	router.Use(middleware.CORS(cfg))
 	router.Use(middleware.RateLimit(cfg))
-	router.Use(middleware.TenantContext())
+	router.Use(middleware.TenantContext(cfg))
 	router.Use(middleware.RequestID())
 
 	// Initialize handlers
@@ -177,7 +177,7 @@ func setupRoutes(
 
 	// Management API endpoints (versioned)
 	api := router.Group("/v1")
-	api.Use(middleware.RequireAuth()) // Require authentication for management APIs
+	api.Use(middleware.RequireAuth(cfg)) // Require authentication for management APIs
 	{
 		// Tenant management
 		tenantHandler.RegisterRoutes(api.Group("/tenants"))

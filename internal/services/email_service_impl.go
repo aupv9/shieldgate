@@ -3,11 +3,14 @@ package services
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"fmt"
+	"net/smtp"
 	"strings"
 	"time"
 
+	"shieldgate/config"
 	"shieldgate/internal/models"
 	"shieldgate/internal/repo"
 
@@ -24,6 +27,7 @@ type EmailServiceImpl struct {
 	passwordResetRepo repo.PasswordResetRepository
 	userRepo          repo.UserRepository
 	auditService      AuditService
+	cfg               *config.Config
 	logger            *logrus.Logger
 }
 
@@ -35,6 +39,7 @@ func NewEmailService(
 	passwordResetRepo repo.PasswordResetRepository,
 	userRepo repo.UserRepository,
 	auditService AuditService,
+	cfg *config.Config,
 	logger *logrus.Logger,
 ) EmailService {
 	return &EmailServiceImpl{
@@ -44,6 +49,7 @@ func NewEmailService(
 		passwordResetRepo: passwordResetRepo,
 		userRepo:          userRepo,
 		auditService:      auditService,
+		cfg:               cfg,
 		logger:            logger,
 	}
 }
@@ -170,8 +176,8 @@ func (s *EmailServiceImpl) SendEmail(ctx context.Context, tenantID uuid.UUID, re
 		TenantID:    tenantID,
 		ToEmail:     req.ToEmail,
 		ToName:      req.ToName,
-		FromEmail:   "noreply@shieldgate.com", // TODO: Make configurable
-		FromName:    "ShieldGate",             // TODO: Make configurable
+		FromEmail:   s.cfg.SMTPFrom,
+		FromName:    s.cfg.SMTPFromName,
 		Subject:     subject,
 		BodyHTML:    bodyHTML,
 		BodyText:    bodyText,
@@ -523,20 +529,26 @@ func (s *EmailServiceImpl) processTemplate(template string, variables map[string
 }
 
 func (s *EmailServiceImpl) processEmail(ctx context.Context, email *models.EmailQueue) error {
-	// Update attempts
 	email.Attempts++
 	email.UpdatedAt = time.Now()
 
-	// TODO: Implement actual email sending logic here
-	// For now, we'll just mark it as sent
+	if err := s.sendViaSMTP(email); err != nil {
+		s.logger.WithError(err).WithFields(logrus.Fields{
+			"email_id": email.ID,
+			"to_email": email.ToEmail,
+			"attempts": email.Attempts,
+		}).Error("SMTP send failed")
+
+		email.Status = "failed"
+		if err2 := s.queueRepo.Update(ctx, email); err2 != nil {
+			s.logger.WithError(err2).Error("failed to update email status after send failure")
+		}
+		return fmt.Errorf("SMTP send failed: %w", err)
+	}
+
 	email.Status = "sent"
 	now := time.Now()
 	email.SentAt = &now
-
-	// In a real implementation, you would:
-	// 1. Connect to SMTP server or email service (SendGrid, AWS SES, etc.)
-	// 2. Send the email
-	// 3. Handle success/failure
 
 	if err := s.queueRepo.Update(ctx, email); err != nil {
 		return fmt.Errorf("failed to update email status: %w", err)
@@ -550,6 +562,130 @@ func (s *EmailServiceImpl) processEmail(ctx context.Context, email *models.Email
 
 	return nil
 }
+
+// sendViaSMTP delivers a single email via SMTP using net/smtp.
+// If SMTPHost is empty, the send is skipped and the email is marked sent (dev mode).
+func (s *EmailServiceImpl) sendViaSMTP(email *models.EmailQueue) error {
+	host := s.cfg.SMTPHost
+	if host == "" {
+		s.logger.WithField("email_id", email.ID).Warn("SMTP host not configured, skipping send (dev mode)")
+		return nil
+	}
+
+	addr := fmt.Sprintf("%s:%d", host, s.cfg.SMTPPort)
+
+	// Build RFC 2822 message
+	var auth smtp.Auth
+	if s.cfg.SMTPUser != "" {
+		auth = smtp.PlainAuth("", s.cfg.SMTPUser, s.cfg.SMTPPassword, host)
+	}
+
+	from := fmt.Sprintf("%s <%s>", s.cfg.SMTPFromName, s.cfg.SMTPFrom)
+	to := email.ToEmail
+	if email.ToName != "" {
+		to = fmt.Sprintf("%s <%s>", email.ToName, email.ToEmail)
+	}
+
+	body := buildMIMEMessage(from, to, email.Subject, email.BodyHTML, email.BodyText)
+
+	if s.cfg.SMTPUseTLS {
+		// Implicit TLS (port 465)
+		tlsCfg := &tls.Config{ServerName: host}
+		conn, err := tls.Dial("tcp", addr, tlsCfg)
+		if err != nil {
+			return fmt.Errorf("TLS dial failed: %w", err)
+		}
+		defer conn.Close()
+
+		client, err := smtp.NewClient(conn, host)
+		if err != nil {
+			return fmt.Errorf("SMTP client creation failed: %w", err)
+		}
+		defer client.Quit()
+
+		if auth != nil {
+			if err := client.Auth(auth); err != nil {
+				return fmt.Errorf("SMTP auth failed: %w", err)
+			}
+		}
+		if err := client.Mail(s.cfg.SMTPFrom); err != nil {
+			return fmt.Errorf("SMTP MAIL FROM failed: %w", err)
+		}
+		if err := client.Rcpt(email.ToEmail); err != nil {
+			return fmt.Errorf("SMTP RCPT TO failed: %w", err)
+		}
+		w, err := client.Data()
+		if err != nil {
+			return fmt.Errorf("SMTP DATA failed: %w", err)
+		}
+		defer w.Close()
+		_, err = w.Write([]byte(body))
+		return err
+	}
+
+	// STARTTLS / plain (port 587 or 25)
+	client, err := smtp.Dial(addr)
+	if err != nil {
+		return fmt.Errorf("SMTP dial failed: %w", err)
+	}
+	defer client.Quit()
+
+	if ok, _ := client.Extension("STARTTLS"); ok {
+		tlsCfg := &tls.Config{ServerName: host}
+		if err := client.StartTLS(tlsCfg); err != nil {
+			return fmt.Errorf("STARTTLS failed: %w", err)
+		}
+	}
+
+	if auth != nil {
+		if err := client.Auth(auth); err != nil {
+			return fmt.Errorf("SMTP auth failed: %w", err)
+		}
+	}
+	if err := client.Mail(s.cfg.SMTPFrom); err != nil {
+		return fmt.Errorf("SMTP MAIL FROM failed: %w", err)
+	}
+	if err := client.Rcpt(email.ToEmail); err != nil {
+		return fmt.Errorf("SMTP RCPT TO failed: %w", err)
+	}
+	w, err := client.Data()
+	if err != nil {
+		return fmt.Errorf("SMTP DATA failed: %w", err)
+	}
+	defer w.Close()
+	_, err = w.Write([]byte(body))
+	return err
+}
+
+// buildMIMEMessage constructs a multipart/alternative MIME message.
+func buildMIMEMessage(from, to, subject, bodyHTML, bodyText string) string {
+	boundary := "ShieldGate_" + fmt.Sprintf("%d", time.Now().UnixNano())
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("From: %s\r\n", from))
+	sb.WriteString(fmt.Sprintf("To: %s\r\n", to))
+	sb.WriteString(fmt.Sprintf("Subject: %s\r\n", subject))
+	sb.WriteString("MIME-Version: 1.0\r\n")
+	sb.WriteString(fmt.Sprintf("Content-Type: multipart/alternative; boundary=\"%s\"\r\n", boundary))
+	sb.WriteString("\r\n")
+
+	if bodyText != "" {
+		sb.WriteString(fmt.Sprintf("--%s\r\n", boundary))
+		sb.WriteString("Content-Type: text/plain; charset=\"utf-8\"\r\n\r\n")
+		sb.WriteString(bodyText)
+		sb.WriteString("\r\n")
+	}
+
+	if bodyHTML != "" {
+		sb.WriteString(fmt.Sprintf("--%s\r\n", boundary))
+		sb.WriteString("Content-Type: text/html; charset=\"utf-8\"\r\n\r\n")
+		sb.WriteString(bodyHTML)
+		sb.WriteString("\r\n")
+	}
+
+	sb.WriteString(fmt.Sprintf("--%s--\r\n", boundary))
+	return sb.String()
+}
+
 
 func (s *EmailServiceImpl) generateVerificationCode() (string, error) {
 	bytes := make([]byte, 16)
