@@ -3,7 +3,6 @@ package config
 import (
 	"errors"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/spf13/viper"
@@ -101,10 +100,6 @@ func Load() (*Config, error) {
 			fmt.Printf("Warning: Config file not found, using environment variables and defaults\n")
 		}
 	}
-
-	// Debug: Print environment variables
-	fmt.Printf("DEBUG: DATABASE_URL env var: %s\n", os.Getenv("DATABASE_URL"))
-	fmt.Printf("DEBUG: Config database.url: %s\n", viper.GetString("database.url"))
 
 	return &Config{
 		// Database

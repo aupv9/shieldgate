@@ -15,6 +15,8 @@ import (
 	"shieldgate/config"
 	"shieldgate/internal/database"
 	"shieldgate/internal/models"
+	"shieldgate/internal/repo"
+	"shieldgate/internal/services"
 )
 
 // TenantContext keys
@@ -96,8 +98,13 @@ func RequestID() gin.HandlerFunc {
 	}
 }
 
-// RequireAuth middleware validates JWT token and sets user/client/tenant context
-func RequireAuth(cfg *config.Config) gin.HandlerFunc {
+// RequireAuth middleware validates JWT token, checks the token blacklist (DB),
+// and sets user/client/tenant context.
+//
+// tokenRepo is optional. When provided, each request performs a DB lookup to
+// verify the token has not been revoked via logout. Pass nil to skip that
+// check (stateless JWT-only validation).
+func RequireAuth(cfg *config.Config, tokenRepo repo.AccessTokenRepository) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
@@ -139,6 +146,21 @@ func RequireAuth(cfg *config.Config) gin.HandlerFunc {
 			return
 		}
 
+		// Token blacklist check: verify the token was not revoked via logout.
+		// CleanupExpiredTokens only removes tokens past their expires_at, so a
+		// valid (non-expired) JWT that has been explicitly revoked will be absent
+		// from the DB.
+		if tokenRepo != nil {
+			tenantID, tenantErr := uuid.Parse(claims.TenantID)
+			if tenantErr == nil {
+				if _, dbErr := tokenRepo.GetByToken(c.Request.Context(), tenantID, tokenString); dbErr != nil {
+					RespondWithError(c, http.StatusUnauthorized, models.ErrorCodeUnauthorized, "Token has been revoked", nil)
+					c.Abort()
+					return
+				}
+			}
+		}
+
 		// Set authenticated context values from JWT claims
 		if userID, err := uuid.Parse(claims.UserID); err == nil {
 			c.Set(UserIDKey, userID)
@@ -148,6 +170,47 @@ func RequireAuth(cfg *config.Config) gin.HandlerFunc {
 		}
 		if tenantID, err := uuid.Parse(claims.TenantID); err == nil {
 			c.Set(TenantIDKey, tenantID)
+		}
+
+		c.Next()
+	}
+}
+
+// RequirePermission middleware enforces that the authenticated user holds the
+// specified resource+action permission via their assigned roles.
+//
+// RequireAuth must run before this middleware so that UserID and TenantID are
+// set in the gin context.
+func RequirePermission(permService services.PermissionService, resource, action string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		tenantID, err := GetTenantID(c)
+		if err != nil {
+			RespondWithError(c, http.StatusUnauthorized, models.ErrorCodeUnauthorized, "Invalid tenant context", nil)
+			c.Abort()
+			return
+		}
+
+		// uuid.Nil means the request came from a service account (client credentials)
+		// — those are granted access without a role check.
+		userID, _ := GetUserID(c)
+
+		has, err := permService.HasPermission(c.Request.Context(), tenantID, userID, resource, action)
+		if err != nil {
+			logrus.WithError(err).WithFields(logrus.Fields{
+				"tenant_id": tenantID,
+				"user_id":   userID,
+				"resource":  resource,
+				"action":    action,
+			}).Error("permission check failed")
+			RespondWithError(c, http.StatusInternalServerError, models.ErrorCodeInternalError, "Permission check failed", nil)
+			c.Abort()
+			return
+		}
+
+		if !has {
+			RespondWithError(c, http.StatusForbidden, models.ErrorCodePermissionDenied, "Insufficient permissions", nil)
+			c.Abort()
+			return
 		}
 
 		c.Next()
@@ -327,32 +390,35 @@ func CORS(cfg *config.Config) gin.HandlerFunc {
 	}
 }
 
-// RateLimit middleware implements per-IP rate limiting via Redis
-func RateLimit(cfg *config.Config) gin.HandlerFunc {
+// RateLimit middleware implements per-IP rate limiting via Redis.
+//
+// Fail-closed behaviour: if redisClient is non-nil (rate limiting is
+// configured) but the Redis operation returns an error, the request is
+// rejected with 503 rather than being silently allowed through. This prevents
+// an attacker from taking Redis offline to bypass rate-limiting.
+//
+// If redisClient is nil (Redis not configured) the middleware logs a one-time
+// warning at startup and passes all requests through without limiting.
+func RateLimit(cfg *config.Config, redisClient *database.RedisClient) gin.HandlerFunc {
+	if redisClient == nil {
+		logrus.Warn("Redis not configured — rate limiting is disabled")
+		return func(c *gin.Context) { c.Next() }
+	}
+
 	return func(c *gin.Context) {
 		clientIP := getClientIP(c)
-
-		redisClient, exists := c.Get("redis")
-		if !exists {
-			logrus.Warn("Redis not available, skipping rate limiting")
-			c.Next()
-			return
-		}
-
-		redis, ok := redisClient.(*database.RedisClient)
-		if !ok {
-			logrus.Warn("Invalid Redis client type, skipping rate limiting")
-			c.Next()
-			return
-		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		current, err := redis.GetRateLimit(ctx, clientIP)
+		current, err := redisClient.GetRateLimit(ctx, clientIP)
 		if err != nil {
-			logrus.Errorf("Failed to get rate limit for %s: %v", clientIP, err)
-			c.Next()
+			logrus.WithError(err).Errorf("rate limit check failed for %s — rejecting request (fail-closed)", clientIP)
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"error":             "service_unavailable",
+				"error_description": "Rate limiting service is temporarily unavailable. Please try again later.",
+			})
+			c.Abort()
 			return
 		}
 
@@ -366,8 +432,14 @@ func RateLimit(cfg *config.Config) gin.HandlerFunc {
 			return
 		}
 
-		if err := redis.SetRateLimit(ctx, clientIP, int64(cfg.RateLimitRequestsPerMinute), time.Minute); err != nil {
-			logrus.Errorf("Failed to set rate limit for %s: %v", clientIP, err)
+		if err := redisClient.SetRateLimit(ctx, clientIP, int64(cfg.RateLimitRequestsPerMinute), time.Minute); err != nil {
+			logrus.WithError(err).Errorf("rate limit increment failed for %s — rejecting request (fail-closed)", clientIP)
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"error":             "service_unavailable",
+				"error_description": "Rate limiting service is temporarily unavailable. Please try again later.",
+			})
+			c.Abort()
+			return
 		}
 
 		c.Header("X-RateLimit-Limit", fmt.Sprintf("%d", cfg.RateLimitRequestsPerMinute))

@@ -52,6 +52,7 @@ func (h *OAuthHandler) RegisterRoutes(router *gin.RouterGroup) {
 		oauth.POST("/token", h.HandleToken)
 		oauth.POST("/introspect", h.HandleIntrospect)
 		oauth.POST("/revoke", h.HandleRevoke)
+		oauth.POST("/logout", h.HandleLogout)
 	}
 
 	// OpenID Connect endpoints
@@ -433,6 +434,34 @@ func (h *OAuthHandler) HandleIntrospect(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, introspection)
+}
+
+// HandleLogout revokes the caller's access token and all associated refresh
+// tokens. The access token is deleted from the DB so that the RequireAuth
+// blacklist check will reject any subsequent use of it, even while the JWT
+// signature is still cryptographically valid.
+func (h *OAuthHandler) HandleLogout(c *gin.Context) {
+	tenantID, err := middleware.GetTenantID(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_request", "error_description": "Tenant context required"})
+		return
+	}
+
+	authHeader := c.GetHeader("Authorization")
+	if !strings.HasPrefix(authHeader, "Bearer ") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request", "error_description": "Bearer token required"})
+		return
+	}
+	tokenString := strings.TrimPrefix(authHeader, "Bearer ")
+
+	if err := h.authService.Logout(c.Request.Context(), tenantID, tokenString); err != nil {
+		h.logger.WithError(err).WithField("tenant_id", tenantID).Error("logout failed")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "server_error", "error_description": "Logout failed"})
+		return
+	}
+
+	h.logger.WithField("tenant_id", tenantID).Info("user logged out successfully")
+	c.Status(http.StatusNoContent)
 }
 
 // HandleRevoke handles token revocation

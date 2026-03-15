@@ -351,6 +351,30 @@ func (s *authServiceImpl) GetDiscoveryDocument(ctx context.Context) (*models.Ope
 	}, nil
 }
 
+// Logout revokes the given access token and all associated refresh tokens for the
+// user+client pair encoded in the JWT. This ensures that after logout, both the
+// access token DB record and all refresh tokens are removed so that the
+// RequireAuth DB-blacklist check will reject further use of the token.
+func (s *authServiceImpl) Logout(ctx context.Context, tenantID uuid.UUID, tokenString string) error {
+	// Delete the access token from the DB (this is the primary blacklist mechanism).
+	if err := s.repos.AccessToken.Delete(ctx, tenantID, tokenString); err != nil {
+		s.logger.WithError(err).WithField("tenant_id", tenantID).Warn("logout: failed to delete access token")
+	}
+
+	// Parse the JWT to retrieve user + client so we can clean up refresh tokens.
+	claims, err := s.ValidateAccessToken(ctx, tenantID, tokenString)
+	if err == nil {
+		if userID, parseErr := uuid.Parse(claims.UserID); parseErr == nil && userID != uuid.Nil {
+			if delErr := s.repos.RefreshToken.DeleteByUserID(ctx, tenantID, userID); delErr != nil {
+				s.logger.WithError(delErr).WithField("user_id", userID).Warn("logout: failed to delete refresh tokens")
+			}
+		}
+	}
+
+	s.logger.WithField("tenant_id", tenantID).Info("user logged out, tokens revoked")
+	return nil
+}
+
 func (s *authServiceImpl) CleanupExpiredTokens(ctx context.Context) error {
 	if err := s.repos.AuthCode.DeleteExpired(ctx); err != nil {
 		s.logger.WithError(err).Error("failed to cleanup expired authorization codes")
