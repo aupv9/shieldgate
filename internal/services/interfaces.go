@@ -84,6 +84,9 @@ type AuthService interface {
 	GetUserInfo(ctx context.Context, tenantID uuid.UUID, accessToken string) (*models.UserInfo, error)
 	GetDiscoveryDocument(ctx context.Context) (*models.OpenIDConfiguration, error)
 
+	// Session Management
+	Logout(ctx context.Context, tenantID uuid.UUID, tokenString string) error
+
 	// Cleanup
 	CleanupExpiredTokens(ctx context.Context) error
 }

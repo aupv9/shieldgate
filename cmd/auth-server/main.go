@@ -19,7 +19,8 @@ import (
 	"shieldgate/internal/database"
 	"shieldgate/internal/handlers"
 	"shieldgate/internal/middleware"
-	"shieldgate/internal/repo/gorm"
+	"shieldgate/internal/repo"
+	gormrepo "shieldgate/internal/repo/gorm"
 	"shieldgate/internal/services"
 )
 
@@ -65,13 +66,14 @@ func main() {
 	}
 
 	// Initialize repositories
-	repos := gorm.NewRepositories(db)
+	repos := gormrepo.NewRepositories(db)
 
 	// Initialize services
 	tenantService := services.NewTenantService(repos, logger)
 	userService := services.NewUserService(repos, logger)
 	clientService := services.NewClientService(repos, logger)
 	authService := services.NewAuthService(repos, cfg, logger)
+	permissionService := services.NewPermissionService(repos.Permission, repos.UserRole, repos.RolePermission, logger)
 
 	// Setup Gin router
 	if cfg.GinMode != "" {
@@ -84,7 +86,7 @@ func main() {
 	router.Use(gin.Logger())
 	router.Use(gin.Recovery())
 	router.Use(middleware.CORS(cfg))
-	router.Use(middleware.RateLimit(cfg))
+	router.Use(middleware.RateLimit(cfg, redisClient))
 	router.Use(middleware.TenantContext(cfg))
 	router.Use(middleware.RequestID())
 
@@ -95,7 +97,7 @@ func main() {
 	oauthHandler := handlers.NewOAuthHandler(tenantService, userService, clientService, authService, logger)
 
 	// Setup routes
-	setupRoutes(router, tenantHandler, userHandler, clientHandler, oauthHandler)
+	setupRoutes(router, cfg, repos, permissionService, tenantHandler, userHandler, clientHandler, oauthHandler)
 
 	// Create HTTP server
 	server := &http.Server{
@@ -158,6 +160,9 @@ func setupLogging(cfg *config.Config) *logrus.Logger {
 
 func setupRoutes(
 	router *gin.Engine,
+	cfg *config.Config,
+	repos *repo.Repositories,
+	permService services.PermissionService,
 	tenantHandler *handlers.TenantHandler,
 	userHandler *handlers.UserHandler,
 	clientHandler *handlers.ClientHandler,
@@ -176,17 +181,24 @@ func setupRoutes(
 	oauthHandler.RegisterRoutes(router.Group(""))
 
 	// Management API endpoints (versioned)
+	// RequireAuth validates the JWT and checks the token blacklist (DB).
 	api := router.Group("/v1")
-	api.Use(middleware.RequireAuth(cfg)) // Require authentication for management APIs
+	api.Use(middleware.RequireAuth(cfg, repos.AccessToken))
 	{
-		// Tenant management
-		tenantHandler.RegisterRoutes(api.Group("/tenants"))
+		// Tenant management — requires tenants:manage permission
+		tenants := api.Group("/tenants")
+		tenants.Use(middleware.RequirePermission(permService, "tenants", "manage"))
+		tenantHandler.RegisterRoutes(tenants)
 
-		// User management
-		userHandler.RegisterRoutes(api.Group("/users"))
+		// User management — requires users:manage permission
+		users := api.Group("/users")
+		users.Use(middleware.RequirePermission(permService, "users", "manage"))
+		userHandler.RegisterRoutes(users)
 
-		// Client management
-		clientHandler.RegisterRoutes(api.Group("/clients"))
+		// Client management — requires clients:manage permission
+		clients := api.Group("/clients")
+		clients.Use(middleware.RequirePermission(permService, "clients", "manage"))
+		clientHandler.RegisterRoutes(clients)
 	}
 
 	// Serve static files and templates

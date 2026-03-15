@@ -14,23 +14,23 @@ type APIResponse struct {
 
 // APIError represents a standardized API error
 type APIError struct {
-	Code    string                 `json:"code"`
-	Message string                 `json:"message"`
-	Details map[string]interface{} `json:"details,omitempty"`
+	Code    string      `json:"code"`
+	Message string      `json:"message"`
+	Details interface{} `json:"details,omitempty"`
 }
 
-// RespondWithSuccess sends a successful response
-func RespondWithSuccess(c *gin.Context, statusCode int, data interface{}) {
+// RespondWithSuccess sends a 200 OK response with the given data.
+func RespondWithSuccess(c *gin.Context, data interface{}) {
 	response := APIResponse{
 		Success:   true,
 		Data:      data,
 		RequestID: GetRequestID(c),
 	}
-	c.JSON(statusCode, response)
+	c.JSON(200, response)
 }
 
 // RespondWithError sends an error response
-func RespondWithError(c *gin.Context, statusCode int, errorCode, message string, details map[string]interface{}) {
+func RespondWithError(c *gin.Context, statusCode int, errorCode, message string, details interface{}) {
 	response := APIResponse{
 		Success: false,
 		Error: &APIError{

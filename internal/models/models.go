@@ -32,6 +32,9 @@ var (
 	ErrRoleNotFound       = errors.New("role not found")
 	ErrPermissionNotFound = errors.New("permission not found")
 	ErrPermissionDenied   = errors.New("permission denied")
+	// RBAC business-rule errors
+	ErrDuplicateResource     = errors.New("resource already exists")
+	ErrBusinessRuleViolation = errors.New("business rule violation")
 	// User management errors
 	ErrUserLocked              = errors.New("user account is locked")
 	ErrUserSuspended           = errors.New("user account is suspended")
@@ -98,6 +101,9 @@ const (
 	AuditActionClientCreated     AuditAction = "client.created"
 	AuditActionClientUpdated     AuditAction = "client.updated"
 	AuditActionClientDeleted     AuditAction = "client.deleted"
+	AuditActionRoleCreated       AuditAction = "role.created"
+	AuditActionRoleUpdated       AuditAction = "role.updated"
+	AuditActionRoleDeleted       AuditAction = "role.deleted"
 	AuditActionRoleAssigned      AuditAction = "role.assigned"
 	AuditActionRoleRevoked       AuditAction = "role.revoked"
 	AuditActionPermissionGranted AuditAction = "permission.granted"
