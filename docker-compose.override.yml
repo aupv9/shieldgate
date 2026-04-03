@@ -1,0 +1,60 @@
+# Docker Compose Override for Local Development
+# This file is automatically loaded by docker-compose and provides
+# development-specific overrides
+
+version: '3.8'
+
+services:
+  # Development overrides for auth-server
+  auth-server:
+    environment:
+      # Enable debug mode for development
+      - GIN_MODE=debug
+      - LOG_LEVEL=debug
+      - LOG_FORMAT=text
+    volumes:
+      # Mount source code for hot reload (if using air or similar)
+      - .:/app/src:ro
+      # Mount logs directory for easier access
+      - ./logs:/app/logs
+
+  # Development database with exposed port
+  postgres:
+    ports:
+      - "5432:5432"
+
+  # Development Redis with exposed port
+  redis:
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --loglevel debug
+
+  # Development tools
+  adminer:
+    image: adminer:latest
+    container_name: shieldgate-adminer
+    ports:
+      - "8081:8080"
+    environment:
+      - ADMINER_DEFAULT_SERVER=postgres
+    depends_on:
+      - postgres
+    networks:
+      - shieldgate-network
+    profiles:
+      - dev-tools
+
+  # Redis Commander for Redis management
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: shieldgate-redis-commander
+    ports:
+      - "8082:8081"
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    depends_on:
+      - redis
+    networks:
+      - shieldgate-network
+    profiles:
+      - dev-tools

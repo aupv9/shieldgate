@@ -1,0 +1,30 @@
+---
+description: Go coding and layering conventions for ShieldGate
+globs: **/*.go
+alwaysApply: false
+---
+
+# Go File Conventions for ShieldGate
+
+- **Layering**:
+  - Handlers (`internal/handlers`) should be thin: validate/parse input, call services, map errors to HTTP responses.
+  - Services (`internal/services`) contain business logic and orchestrate repositories and external systems.
+  - Repositories (`internal/repo/gorm`) encapsulate all DB access; do not access GORM directly from handlers/services.
+
+- **Dependencies**:
+  - Avoid circular dependencies between packages; keep imports pointing "down" the stack.
+  - Prefer interfaces (defined close to consumers) to allow test doubles and prevent tight coupling.
+
+- **Error design**:
+  - Return `error` values with enough context; prefer wrapping (`fmt.Errorf("...: %w", err)`) where helpful.
+  - Define reusable sentinel or typed errors for common authZ/authN scenarios (e.g., invalid client, invalid grant, token expired).
+  - Let handlers translate domain errors into appropriate HTTP status codes and response bodies.
+
+- **Logging**:
+  - Log once per failure path at the service or handler boundary; avoid duplicated logs at multiple layers for the same error.
+  - Include fields such as tenant ID, client ID, user ID, and grant type where available (but never full tokens or secrets).
+
+- **Performance & correctness**:
+  - Use context timeouts/cancellation for external calls (DB, Redis, HTTP).
+  - Be careful with concurrency around token revocation, replay protection, and rate limiting; prefer existing utilities/patterns.
+

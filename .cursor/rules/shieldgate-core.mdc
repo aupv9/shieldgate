@@ -1,0 +1,40 @@
+---
+description: Core rules for the ShieldGate OAuth2/OIDC authorization server
+alwaysApply: true
+---
+
+# ShieldGate Core Project Rules
+
+- **Domain focus**: This project is a production-grade OAuth 2.0 + OpenID Connect authorization server. Preserve strict separation between HTTP handlers, services, repositories, and database/Redis layers.
+
+- **Architecture**:
+  - Follow the four-layer pattern: handlers → services → repositories → Postgres/Redis.
+  - Keep business logic in services, not in handlers or repositories.
+  - Add new features by following the documented flow: model → repo interface + GORM impl → service interface + impl → handler → route registration.
+
+- **Coding style**:
+  - Use Go 1.21+ idioms and `go fmt` formatting.
+  - Use `camelCase` for unexported and `PascalCase` for exported identifiers.
+  - Propagate `context.Context`/`*gin.Context` as the first parameter where appropriate.
+
+- **Error handling & logging**:
+  - Never ignore errors; always return or handle them explicitly.
+  - Use structured logging with Logrus (`logrus.WithField(s)` / `WithFields`) and include correlation/request IDs when available.
+  - Prefer domain-specific error types and clear messages over generic `errors.New("failed")`.
+
+- **Security & data handling**:
+  - Treat all auth flows (OAuth, OIDC, JWT, tokens, secrets, client credentials) as security-critical.
+  - Never log secrets, access tokens, refresh tokens, client secrets, or passwords.
+  - Use parameterized queries via GORM; never interpolate user input into raw SQL.
+  - Keep cryptographic and token logic centralized; avoid ad-hoc token parsing or verification outside the designated utilities/services.
+
+- **Testing & quality**:
+  - Maintain high test coverage (target ≥ 80% per package) using the Arrange–Act–Assert pattern.
+  - Add tests alongside new handlers, services, and repositories before or with the feature.
+  - Use `go test`, `go vet`, and the existing `make` targets (`make lint`, `make security`, etc.) to keep the codebase healthy.
+
+- **Configuration**:
+  - Use Viper-driven configuration (`config.yaml` + environment variables).
+  - Never hard-code secrets; rely on env vars or secrets management.
+  - Keep JWT and database/Redis configuration consistent with the existing patterns.
+
