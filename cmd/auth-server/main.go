@@ -19,6 +19,7 @@ import (
 	"shieldgate/config"
 	"shieldgate/internal/database"
 	"shieldgate/internal/handlers"
+	"shieldgate/internal/idempotency"
 	"shieldgate/internal/middleware"
 	gormrepo "shieldgate/internal/repo/gorm"
 	"shieldgate/internal/services"
@@ -67,6 +68,16 @@ func main() {
 			defer redisClient.Close()
 			logger.Info("Redis connection established")
 		}
+	}
+
+	// Initialize idempotency store (Redis when available, in-memory fallback)
+	var idempotencyStore idempotency.Store
+	if redisClient != nil {
+		idempotencyStore = idempotency.NewRedisStore(redisClient, idempotency.DefaultTTL)
+		logger.Info("Idempotency store: Redis")
+	} else {
+		idempotencyStore = idempotency.NewMemoryStore(idempotency.DefaultTTL)
+		logger.Warn("Idempotency store: in-memory (not suitable for multi-replica deployments)")
 	}
 
 	// Initialize repositories
@@ -129,7 +140,7 @@ func main() {
 	oauthHandler := handlers.NewOAuthHandler(tenantService, userService, clientService, authService, logger)
 
 	// Setup routes
-	setupRoutes(cfg, db, redisClient, router, tenantHandler, userHandler, clientHandler, oauthHandler)
+	setupRoutes(cfg, db, redisClient, idempotencyStore, router, tenantHandler, userHandler, clientHandler, oauthHandler)
 
 	// Create HTTP server
 	server := &http.Server{
@@ -197,6 +208,7 @@ func setupRoutes(
 	cfg *config.Config,
 	db *gorm.DB,
 	redisClient *database.RedisClient,
+	idempotencyStore idempotency.Store,
 	router *gin.Engine,
 	tenantHandler *handlers.TenantHandler,
 	userHandler *handlers.UserHandler,
@@ -249,7 +261,8 @@ func setupRoutes(
 
 	// Management API endpoints (versioned)
 	api := router.Group("/v1")
-	api.Use(middleware.RequireAuth(cfg)) // Require authentication for management APIs
+	api.Use(middleware.RequireAuth(cfg))          // Require authentication for management APIs
+	api.Use(middleware.Idempotency(idempotencyStore)) // Safe retries for all POST create operations
 	{
 		// Tenant management
 		tenantHandler.RegisterRoutes(api.Group("/tenants"))
