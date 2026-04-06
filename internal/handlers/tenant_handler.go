@@ -68,8 +68,9 @@ func (h *TenantHandler) CreateTenant(c *gin.Context) {
 		return
 	}
 
-	// TODO: Check idempotency key
-	// idempotencyKey := c.GetHeader("Idempotency-Key")
+	// Idempotency is enforced by the middleware.Idempotency middleware applied to
+	// the /v1 route group.  Duplicate requests with the same Idempotency-Key
+	// header will receive the cached response before reaching this handler.
 
 	tenant, err := h.tenantService.Create(c.Request.Context(), &req)
 	if err != nil {
