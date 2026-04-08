@@ -88,6 +88,20 @@ func main() {
 	userService := services.NewUserService(repos, logger)
 	clientService := services.NewClientService(repos, logger)
 	authService := services.NewAuthService(repos, cfg, logger)
+	roleService := services.NewRoleService(
+		repos.Role,
+		repos.Permission,
+		repos.UserRole,
+		repos.RolePermission,
+		auditService,
+		logger,
+	)
+	permissionService := services.NewPermissionService(
+		repos.Permission,
+		repos.UserRole,
+		repos.RolePermission,
+		logger,
+	)
 
 	// Start background email queue processor
 	go func() {
@@ -102,6 +116,24 @@ func main() {
 			case <-ticker.C:
 				if err := emailService.ProcessQueue(rootCtx); err != nil {
 					logger.WithError(err).Error("Failed to process email queue")
+				}
+			}
+		}
+	}()
+
+	// Start background token cleanup worker (runs every hour)
+	go func() {
+		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-rootCtx.Done():
+				logger.Info("Token cleanup worker shutting down")
+				return
+			case <-ticker.C:
+				if err := authService.CleanupExpiredTokens(rootCtx); err != nil {
+					logger.WithError(err).Error("Failed to cleanup expired tokens")
 				}
 			}
 		}
@@ -127,9 +159,11 @@ func main() {
 	userHandler := handlers.NewUserHandler(userService, logger)
 	clientHandler := handlers.NewClientHandler(clientService, logger)
 	oauthHandler := handlers.NewOAuthHandler(tenantService, userService, clientService, authService, logger)
+	rbacHandler := handlers.NewRBACHandler(roleService, permissionService, auditService, logger)
+	auditHandler := handlers.NewAuditHandler(auditService, logger)
 
 	// Setup routes
-	setupRoutes(cfg, db, redisClient, router, tenantHandler, userHandler, clientHandler, oauthHandler)
+	setupRoutes(cfg, db, redisClient, router, tenantHandler, userHandler, clientHandler, oauthHandler, rbacHandler, auditHandler)
 
 	// Create HTTP server
 	server := &http.Server{
@@ -202,6 +236,8 @@ func setupRoutes(
 	userHandler *handlers.UserHandler,
 	clientHandler *handlers.ClientHandler,
 	oauthHandler *handlers.OAuthHandler,
+	rbacHandler *handlers.RBACHandler,
+	auditHandler *handlers.AuditHandler,
 ) {
 	// Health check endpoint
 	router.GET("/health", func(c *gin.Context) {
@@ -259,7 +295,13 @@ func setupRoutes(
 
 		// Client management
 		clientHandler.RegisterRoutes(api.Group("/clients"))
+
 	}
+
+	// RBAC and Audit routes register their own /v1/* prefixes and use
+	// RequireAuth middleware internally via the handler.
+	rbacHandler.RegisterRoutes(router.Group(""))
+	auditHandler.RegisterRoutes(router.Group(""))
 
 	// Serve static files and templates
 	router.Static("/static", "./static")

@@ -145,6 +145,183 @@ func Migrate(db *gorm.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_refresh_tokens_client_id ON refresh_tokens(client_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user_id ON refresh_tokens(user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_refresh_tokens_expires_at ON refresh_tokens(expires_at)`,
+
+		// ── Phase 1 Features ────────────────────────────────────────────────
+
+		// Enhanced user management columns
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'pending'`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT FALSE`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_number VARCHAR(50)`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_verified BOOLEAN NOT NULL DEFAULT FALSE`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name VARCHAR(255)`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_name VARCHAR(255)`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar VARCHAR(500)`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS locale VARCHAR(10) DEFAULT 'en'`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS timezone VARCHAR(50) DEFAULT 'UTC'`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMP WITH TIME ZONE`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_ip VARCHAR(45)`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS failed_login_attempts INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_at TIMESTAMP WITH TIME ZONE`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMP WITH TIME ZONE`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'`,
+		`CREATE INDEX IF NOT EXISTS idx_users_status ON users(status)`,
+		`CREATE INDEX IF NOT EXISTS idx_users_email_verified ON users(email_verified)`,
+
+		// Permissions table
+		`CREATE TABLE IF NOT EXISTS permissions (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			name VARCHAR(255) NOT NULL UNIQUE,
+			display_name VARCHAR(255) NOT NULL,
+			description TEXT,
+			resource VARCHAR(255) NOT NULL,
+			action VARCHAR(255) NOT NULL,
+			is_system BOOLEAN NOT NULL DEFAULT FALSE,
+			created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+			deleted_at TIMESTAMP WITH TIME ZONE
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_permissions_resource ON permissions(resource)`,
+		`CREATE INDEX IF NOT EXISTS idx_permissions_action ON permissions(action)`,
+
+		// Roles table
+		`CREATE TABLE IF NOT EXISTS roles (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL,
+			name VARCHAR(255) NOT NULL,
+			display_name VARCHAR(255) NOT NULL,
+			description TEXT,
+			is_system BOOLEAN NOT NULL DEFAULT FALSE,
+			is_active BOOLEAN NOT NULL DEFAULT TRUE,
+			created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+			deleted_at TIMESTAMP WITH TIME ZONE
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_roles_tenant_name ON roles(tenant_id, name) WHERE deleted_at IS NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_roles_tenant_id ON roles(tenant_id)`,
+
+		// User roles junction table
+		`CREATE TABLE IF NOT EXISTS user_roles (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL,
+			user_id UUID NOT NULL,
+			role_id UUID NOT NULL,
+			granted_by UUID NOT NULL,
+			granted_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+			expires_at TIMESTAMP WITH TIME ZONE
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_user_roles_user_role ON user_roles(tenant_id, user_id, role_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_roles_user_id ON user_roles(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_roles_role_id ON user_roles(role_id)`,
+
+		// Role permissions junction table
+		`CREATE TABLE IF NOT EXISTS role_permissions (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			role_id UUID NOT NULL,
+			permission_id UUID NOT NULL,
+			granted_by UUID NOT NULL,
+			granted_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_role_permissions_role_perm ON role_permissions(role_id, permission_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_role_permissions_role_id ON role_permissions(role_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_role_permissions_permission_id ON role_permissions(permission_id)`,
+
+		// Audit logs table
+		`CREATE TABLE IF NOT EXISTS audit_logs (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL,
+			user_id UUID,
+			client_id UUID,
+			action VARCHAR(255) NOT NULL,
+			resource VARCHAR(255) NOT NULL,
+			resource_id UUID,
+			ip_address VARCHAR(45),
+			user_agent TEXT,
+			request_id VARCHAR(255),
+			success BOOLEAN NOT NULL DEFAULT TRUE,
+			error_code VARCHAR(255),
+			error_message TEXT,
+			metadata JSONB DEFAULT '{}',
+			created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_logs_tenant_id ON audit_logs(tenant_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_logs_user_id ON audit_logs(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_logs_resource ON audit_logs(resource)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_logs_success ON audit_logs(success)`,
+
+		// Email templates table
+		`CREATE TABLE IF NOT EXISTS email_templates (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL,
+			name VARCHAR(255) NOT NULL,
+			subject VARCHAR(500) NOT NULL,
+			body_html TEXT,
+			body_text TEXT,
+			variables JSONB DEFAULT '[]',
+			is_active BOOLEAN NOT NULL DEFAULT TRUE,
+			created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+			deleted_at TIMESTAMP WITH TIME ZONE
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_email_templates_tenant_name ON email_templates(tenant_id, name) WHERE deleted_at IS NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_email_templates_tenant_id ON email_templates(tenant_id)`,
+
+		// Email queue table
+		`CREATE TABLE IF NOT EXISTS email_queue (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL,
+			user_id UUID,
+			to_email VARCHAR(255) NOT NULL,
+			to_name VARCHAR(255),
+			from_email VARCHAR(255) NOT NULL,
+			from_name VARCHAR(255),
+			subject VARCHAR(500) NOT NULL,
+			body_html TEXT,
+			body_text TEXT,
+			status VARCHAR(50) NOT NULL DEFAULT 'pending',
+			priority INTEGER NOT NULL DEFAULT 5,
+			attempts INTEGER NOT NULL DEFAULT 0,
+			max_attempts INTEGER NOT NULL DEFAULT 3,
+			last_error TEXT,
+			scheduled_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+			sent_at TIMESTAMP WITH TIME ZONE,
+			created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_email_queue_tenant_id ON email_queue(tenant_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_email_queue_status ON email_queue(status)`,
+		`CREATE INDEX IF NOT EXISTS idx_email_queue_priority ON email_queue(priority)`,
+		`CREATE INDEX IF NOT EXISTS idx_email_queue_scheduled_at ON email_queue(scheduled_at)`,
+
+		// Email verifications table
+		`CREATE TABLE IF NOT EXISTS email_verifications (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL,
+			user_id UUID NOT NULL,
+			email VARCHAR(255) NOT NULL,
+			code VARCHAR(255) NOT NULL UNIQUE,
+			expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+			verified_at TIMESTAMP WITH TIME ZONE,
+			created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_email_verifications_tenant_id ON email_verifications(tenant_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_email_verifications_user_id ON email_verifications(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_email_verifications_expires_at ON email_verifications(expires_at)`,
+
+		// Password resets table
+		`CREATE TABLE IF NOT EXISTS password_resets (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL,
+			user_id UUID NOT NULL,
+			token VARCHAR(255) NOT NULL UNIQUE,
+			expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+			used_at TIMESTAMP WITH TIME ZONE,
+			created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_password_resets_tenant_id ON password_resets(tenant_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_password_resets_user_id ON password_resets(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_password_resets_expires_at ON password_resets(expires_at)`,
 	}
 
 	// Execute each migration
