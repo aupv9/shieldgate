@@ -247,6 +247,7 @@ func TestOAuthHandler_HandleAuthorize_Success(t *testing.T) {
 		mockUserService,
 		mockClientService,
 		mockAuthService,
+		nil, // keyManager — nil selects HS256 in tests
 		logger,
 	)
 
@@ -322,6 +323,7 @@ func TestOAuthHandler_HandleLogin_Success(t *testing.T) {
 		mockUserService,
 		mockClientService,
 		mockAuthService,
+		nil, // keyManager — nil selects HS256 in tests
 		logger,
 	)
 
@@ -418,6 +420,7 @@ func TestOAuthHandler_HandleToken_AuthorizationCodeGrant_Success(t *testing.T) {
 		mockUserService,
 		mockClientService,
 		mockAuthService,
+		nil, // keyManager — nil selects HS256 in tests
 		logger,
 	)
 

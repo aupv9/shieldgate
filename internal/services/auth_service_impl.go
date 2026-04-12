@@ -3,12 +3,15 @@ package services
 import (
 	"context"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
+	"strings"
 	"time"
 
 	"shieldgate/config"
+	"shieldgate/internal/crypto"
 	"shieldgate/internal/models"
 	"shieldgate/internal/repo"
 
@@ -18,17 +21,20 @@ import (
 )
 
 type authServiceImpl struct {
-	repos  *repo.Repositories
-	config *config.Config
-	logger *logrus.Logger
+	repos      *repo.Repositories
+	config     *config.Config
+	keyManager *crypto.KeyManager
+	logger     *logrus.Logger
 }
 
-// NewAuthService creates a new auth service implementation
-func NewAuthService(repos *repo.Repositories, config *config.Config, logger *logrus.Logger) AuthService {
+// NewAuthService creates a new auth service implementation.
+// keyManager may be nil when the server is configured for HS256.
+func NewAuthService(repos *repo.Repositories, config *config.Config, keyManager *crypto.KeyManager, logger *logrus.Logger) AuthService {
 	return &authServiceImpl{
-		repos:  repos,
-		config: config,
-		logger: logger,
+		repos:      repos,
+		config:     config,
+		keyManager: keyManager,
+		logger:     logger,
 	}
 }
 
@@ -169,7 +175,7 @@ func (s *authServiceImpl) GenerateTokens(ctx context.Context, tenantID, clientID
 	}
 
 	// Generate ID token if requested and scope includes openid
-	if includeIDToken && contains(scope, "openid") {
+	if includeIDToken && containsScope(scope, "openid") {
 		user, err := s.repos.User.GetByID(ctx, tenantID, userID)
 		if err == nil {
 			idToken, err := s.GenerateIDToken(ctx, user, clientID.String())
@@ -232,7 +238,7 @@ func (s *authServiceImpl) RevokeToken(ctx context.Context, tenantID uuid.UUID, t
 }
 
 func (s *authServiceImpl) IntrospectToken(ctx context.Context, tenantID uuid.UUID, token string) (*models.IntrospectionResponse, error) {
-	// Try to find as access token
+	// Try to find as access token in the database first (most authoritative source)
 	accessToken, err := s.repos.AccessToken.GetByToken(ctx, tenantID, token)
 	if err == nil {
 		return &models.IntrospectionResponse{
@@ -245,12 +251,12 @@ func (s *authServiceImpl) IntrospectToken(ctx context.Context, tenantID uuid.UUI
 		}, nil
 	}
 
-	// Try to validate as JWT
+	// Fall back to validating as JWT — scope is stored inside the token claims
 	claims, err := s.ValidateAccessToken(ctx, tenantID, token)
 	if err == nil {
 		return &models.IntrospectionResponse{
 			Active:   true,
-			Scope:    "", // Would need to be stored in JWT claims
+			Scope:    claims.Scope,
 			ClientID: claims.ClientID,
 			UserID:   claims.UserID,
 			Exp:      claims.Exp,
@@ -262,6 +268,25 @@ func (s *authServiceImpl) IntrospectToken(ctx context.Context, tenantID uuid.UUI
 }
 
 func (s *authServiceImpl) ValidateAccessToken(ctx context.Context, tenantID uuid.UUID, tokenString string) (*models.JWTClaims, error) {
+	// Try RS256 first when a key manager is available
+	if s.keyManager != nil {
+		token, err := jwt.ParseWithClaims(tokenString, &models.JWTClaims{}, func(token *jwt.Token) (interface{}, error) {
+			if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
+				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+			}
+			return s.keyManager.PublicKey(), nil
+		})
+		if err == nil {
+			if claims, ok := token.Claims.(*models.JWTClaims); ok && token.Valid {
+				if claims.TenantID != tenantID.String() {
+					return nil, models.ErrTenantMismatch
+				}
+				return claims, nil
+			}
+		}
+	}
+
+	// Fall back to HS256 for backward compatibility
 	token, err := jwt.ParseWithClaims(tokenString, &models.JWTClaims{}, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
@@ -274,7 +299,6 @@ func (s *authServiceImpl) ValidateAccessToken(ctx context.Context, tenantID uuid
 	}
 
 	if claims, ok := token.Claims.(*models.JWTClaims); ok && token.Valid {
-		// Validate tenant
 		if claims.TenantID != tenantID.String() {
 			return nil, models.ErrTenantMismatch
 		}
@@ -309,8 +333,7 @@ func (s *authServiceImpl) GenerateIDToken(ctx context.Context, user *models.User
 		Name:     user.Username,
 	}
 
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString([]byte(s.config.JWTSecret))
+	return s.signJWT(claims)
 }
 
 func (s *authServiceImpl) GetUserInfo(ctx context.Context, tenantID uuid.UUID, accessToken string) (*models.UserInfo, error) {
@@ -340,6 +363,11 @@ func (s *authServiceImpl) GetUserInfo(ctx context.Context, tenantID uuid.UUID, a
 }
 
 func (s *authServiceImpl) GetDiscoveryDocument(ctx context.Context) (*models.OpenIDConfiguration, error) {
+	signingAlgs := []string{"RS256"}
+	if s.keyManager == nil {
+		signingAlgs = []string{"HS256"}
+	}
+
 	return &models.OpenIDConfiguration{
 		Issuer:                           s.config.ServerURL,
 		AuthorizationEndpoint:            s.config.ServerURL + "/oauth/authorize",
@@ -348,9 +376,9 @@ func (s *authServiceImpl) GetDiscoveryDocument(ctx context.Context) (*models.Ope
 		JwksURI:                          s.config.ServerURL + "/.well-known/jwks.json",
 		ResponseTypesSupported:           []string{"code"},
 		SubjectTypesSupported:            []string{"public"},
-		IDTokenSigningAlgValuesSupported: []string{"HS256"},
+		IDTokenSigningAlgValuesSupported: signingAlgs,
 		ScopesSupported:                  []string{"openid", "profile", "email", "read", "write"},
-		ClaimsSupported:                  []string{"sub", "name", "email", "email_verified"},
+		ClaimsSupported:                  []string{"sub", "name", "email", "email_verified", "tenant_id"},
 	}, nil
 }
 
@@ -372,6 +400,20 @@ func (s *authServiceImpl) CleanupExpiredTokens(ctx context.Context) error {
 
 // Helper methods
 
+// signJWT signs a set of claims using RS256 when a KeyManager is available,
+// otherwise falls back to HS256.
+func (s *authServiceImpl) signJWT(claims jwt.Claims) (string, error) {
+	if s.keyManager != nil {
+		token := jwt.New(jwt.SigningMethodRS256)
+		token.Header["kid"] = s.keyManager.KID()
+		token.Claims = claims
+		return token.SignedString(s.keyManager.PrivateKey())
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString([]byte(s.config.JWTSecret))
+}
+
 func (s *authServiceImpl) generateJWT(tenantID, clientID, userID uuid.UUID, scope string, duration time.Duration) (string, error) {
 	claims := &models.JWTClaims{
 		Sub:      userID.String(),
@@ -385,8 +427,16 @@ func (s *authServiceImpl) generateJWT(tenantID, clientID, userID uuid.UUID, scop
 		UserID:   userID.String(),
 	}
 
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString([]byte(s.config.JWTSecret))
+	return s.signJWT(claims)
+}
+
+// signingKeyForPublicKey returns the RSA public key when available; used by
+// callers that need the raw key (e.g. middleware).
+func (s *authServiceImpl) signingPublicKey() *rsa.PublicKey {
+	if s.keyManager != nil {
+		return s.keyManager.PublicKey()
+	}
+	return nil
 }
 
 func (s *authServiceImpl) generateRandomString(length int) (string, error) {
@@ -397,10 +447,12 @@ func (s *authServiceImpl) generateRandomString(length int) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(bytes), nil
 }
 
-// Helper function
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr ||
-		(len(s) > len(substr) && (s[:len(substr)+1] == substr+" " ||
-			s[len(s)-len(substr)-1:] == " "+substr ||
-			len(s) > len(substr)*2 && s[len(s)-len(substr):] == substr)))
+// containsScope checks whether scope string contains a specific scope token.
+func containsScope(scopeStr, target string) bool {
+	for _, s := range strings.Fields(scopeStr) {
+		if s == target {
+			return true
+		}
+	}
+	return false
 }

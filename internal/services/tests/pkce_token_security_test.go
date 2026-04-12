@@ -21,7 +21,7 @@ func newTestAuthService() services.AuthService {
 	cfg := utils.CreateTestConfig()
 	logger := logrus.New()
 	logger.SetLevel(logrus.FatalLevel) // silence logs in tests
-	return services.NewAuthService(nil, cfg, logger)
+	return services.NewAuthService(nil, cfg, nil, logger)
 }
 
 // s256Challenge computes a valid S256 code challenge from a verifier.
@@ -83,7 +83,7 @@ func TestValidatePKCE_EmptyInputs(t *testing.T) {
 
 func TestValidateAccessToken_ValidToken(t *testing.T) {
 	cfg := utils.CreateTestConfig()
-	svc := services.NewAuthService(nil, cfg, logrus.New())
+	svc := services.NewAuthService(nil, cfg, nil, logrus.New())
 
 	userID := uuid.New()
 	clientID := uuid.New()
@@ -98,7 +98,7 @@ func TestValidateAccessToken_ValidToken(t *testing.T) {
 
 func TestValidateAccessToken_ExpiredToken(t *testing.T) {
 	cfg := utils.CreateTestConfig()
-	svc := services.NewAuthService(nil, cfg, logrus.New())
+	svc := services.NewAuthService(nil, cfg, nil, logrus.New())
 
 	tenantID := uuid.New()
 	token := utils.CreateExpiredJWT(cfg, uuid.New(), uuid.New(), tenantID)
@@ -109,7 +109,7 @@ func TestValidateAccessToken_ExpiredToken(t *testing.T) {
 
 func TestValidateAccessToken_TamperedSignature(t *testing.T) {
 	cfg := utils.CreateTestConfig()
-	svc := services.NewAuthService(nil, cfg, logrus.New())
+	svc := services.NewAuthService(nil, cfg, nil, logrus.New())
 
 	tenantID := uuid.New()
 	token := utils.CreateTamperedJWT(cfg, uuid.New(), uuid.New(), tenantID)
@@ -120,7 +120,7 @@ func TestValidateAccessToken_TamperedSignature(t *testing.T) {
 
 func TestValidateAccessToken_WrongTenant(t *testing.T) {
 	cfg := utils.CreateTestConfig()
-	svc := services.NewAuthService(nil, cfg, logrus.New())
+	svc := services.NewAuthService(nil, cfg, nil, logrus.New())
 
 	realTenantID := uuid.New()
 	wrongTenantID := uuid.New()
@@ -133,7 +133,7 @@ func TestValidateAccessToken_WrongTenant(t *testing.T) {
 
 func TestValidateAccessToken_MalformedToken(t *testing.T) {
 	cfg := utils.CreateTestConfig()
-	svc := services.NewAuthService(nil, cfg, logrus.New())
+	svc := services.NewAuthService(nil, cfg, nil, logrus.New())
 
 	tenantID := uuid.New()
 	_, err := svc.ValidateAccessToken(context.Background(), tenantID, "not.a.jwt")
@@ -142,7 +142,7 @@ func TestValidateAccessToken_MalformedToken(t *testing.T) {
 
 func TestValidateAccessToken_EmptyToken(t *testing.T) {
 	cfg := utils.CreateTestConfig()
-	svc := services.NewAuthService(nil, cfg, logrus.New())
+	svc := services.NewAuthService(nil, cfg, nil, logrus.New())
 
 	_, err := svc.ValidateAccessToken(context.Background(), uuid.New(), "")
 	assert.Error(t, err)
