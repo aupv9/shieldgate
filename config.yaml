@@ -17,6 +17,8 @@ server:
 # JWT configuration
 jwt:
   secret: "your-super-secret-jwt-key-minimum-32-characters-long"
+  algorithm: "RS256"   # RS256 (asymmetric, recommended) or HS256 (symmetric)
+  rsa_key_path: ""     # directory to persist RSA key pair PEM files; empty = in-memory only
 
 # Security configuration
 security:

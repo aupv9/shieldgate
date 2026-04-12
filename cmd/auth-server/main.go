@@ -17,6 +17,7 @@ import (
 	"gorm.io/gorm"
 
 	"shieldgate/config"
+	"shieldgate/internal/crypto"
 	"shieldgate/internal/database"
 	"shieldgate/internal/handlers"
 	"shieldgate/internal/middleware"
@@ -69,6 +70,19 @@ func main() {
 		}
 	}
 
+	// Initialize RSA key manager for RS256 token signing
+	var keyManager *crypto.KeyManager
+	if cfg.JWTAlgorithm != "HS256" {
+		km, err := crypto.NewKeyManager(cfg.RSAKeyPath)
+		if err != nil {
+			logger.Fatalf("Failed to initialize RSA key manager: %v", err)
+		}
+		keyManager = km
+		logger.WithField("kid", km.KID()).Info("RSA key manager initialized (RS256)")
+	} else {
+		logger.Info("JWT algorithm set to HS256; RSA key manager disabled")
+	}
+
 	// Initialize repositories
 	repos := gormrepo.NewRepositories(db)
 
@@ -87,7 +101,7 @@ func main() {
 	tenantService := services.NewTenantService(repos, logger)
 	userService := services.NewUserService(repos, logger)
 	clientService := services.NewClientService(repos, logger)
-	authService := services.NewAuthService(repos, cfg, logger)
+	authService := services.NewAuthService(repos, cfg, keyManager, logger)
 
 	// Start background email queue processor
 	go func() {
@@ -126,10 +140,10 @@ func main() {
 	tenantHandler := handlers.NewTenantHandler(tenantService, logger)
 	userHandler := handlers.NewUserHandler(userService, logger)
 	clientHandler := handlers.NewClientHandler(clientService, logger)
-	oauthHandler := handlers.NewOAuthHandler(tenantService, userService, clientService, authService, logger)
+	oauthHandler := handlers.NewOAuthHandler(tenantService, userService, clientService, authService, keyManager, logger)
 
 	// Setup routes
-	setupRoutes(cfg, db, redisClient, router, tenantHandler, userHandler, clientHandler, oauthHandler)
+	setupRoutes(cfg, db, redisClient, router, keyManager, tenantHandler, userHandler, clientHandler, oauthHandler)
 
 	// Create HTTP server
 	server := &http.Server{
@@ -198,6 +212,7 @@ func setupRoutes(
 	db *gorm.DB,
 	redisClient *database.RedisClient,
 	router *gin.Engine,
+	keyManager *crypto.KeyManager,
 	tenantHandler *handlers.TenantHandler,
 	userHandler *handlers.UserHandler,
 	clientHandler *handlers.ClientHandler,
@@ -249,7 +264,7 @@ func setupRoutes(
 
 	// Management API endpoints (versioned)
 	api := router.Group("/v1")
-	api.Use(middleware.RequireAuth(cfg)) // Require authentication for management APIs
+	api.Use(middleware.RequireAuth(cfg, keyManager)) // Require authentication for management APIs
 	{
 		// Tenant management
 		tenantHandler.RegisterRoutes(api.Group("/tenants"))

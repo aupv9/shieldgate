@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 
+	"shieldgate/internal/crypto"
 	"shieldgate/internal/middleware"
 	"shieldgate/internal/models"
 	"shieldgate/internal/services"
@@ -21,15 +22,18 @@ type OAuthHandler struct {
 	userService   services.UserService
 	clientService services.ClientService
 	authService   services.AuthService
+	keyManager    *crypto.KeyManager // nil when HS256 is used
 	logger        *logrus.Logger
 }
 
-// NewOAuthHandler creates a new OAuth handler
+// NewOAuthHandler creates a new OAuth handler.
+// keyManager may be nil when the server is configured for HS256.
 func NewOAuthHandler(
 	tenantService services.TenantService,
 	userService services.UserService,
 	clientService services.ClientService,
 	authService services.AuthService,
+	keyManager *crypto.KeyManager,
 	logger *logrus.Logger,
 ) *OAuthHandler {
 	return &OAuthHandler{
@@ -37,6 +41,7 @@ func NewOAuthHandler(
 		userService:   userService,
 		clientService: clientService,
 		authService:   authService,
+		keyManager:    keyManager,
 		logger:        logger,
 	}
 }
@@ -376,26 +381,27 @@ func (h *OAuthHandler) handleClientCredentialsGrant(c *gin.Context, tenantID uui
 
 // HandleUserInfo handles OpenID Connect UserInfo requests
 func (h *OAuthHandler) HandleUserInfo(c *gin.Context) {
-	// Try to get tenant context, if not available, extract from token
-	tenantID, err := middleware.GetTenantID(c)
-	if err != nil {
-		// For UserInfo endpoint, tenant should be extracted from the access token
-		// For now, we'll return an error
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_token"})
-		return
-	}
-
-	// Extract access token
+	// Extract access token first — we need it to derive the tenant when the
+	// TenantContext middleware could not resolve one from the request alone.
 	authHeader := c.GetHeader("Authorization")
 	if !strings.HasPrefix(authHeader, "Bearer ") {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_token"})
 		return
 	}
+	tokenString := strings.TrimPrefix(authHeader, "Bearer ")
 
-	token := strings.TrimPrefix(authHeader, "Bearer ")
+	// Resolve tenant: prefer context (set by TenantContext middleware) then
+	// fall back to the tenant_id claim embedded in the access token.
+	tenantID, err := middleware.GetTenantID(c)
+	if err != nil {
+		tenantID, err = middleware.ExtractTenantFromToken(tokenString, h.keyManager)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_token"})
+			return
+		}
+	}
 
-	// Get user info
-	userInfo, err := h.authService.GetUserInfo(c.Request.Context(), tenantID, token)
+	userInfo, err := h.authService.GetUserInfo(c.Request.Context(), tenantID, tokenString)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_token"})
 		return
@@ -415,20 +421,20 @@ func (h *OAuthHandler) HandleDiscovery(c *gin.Context) {
 	c.JSON(http.StatusOK, discovery)
 }
 
-// HandleJWKS handles JWKS endpoint.
-// This server uses HS256 (symmetric HMAC). The shared secret is never exposed via JWKS.
-// The entry below advertises the signing algorithm so OIDC discovery clients can read
-// key metadata. Token validation requires the shared JWT secret (out-of-band).
+// HandleJWKS handles the /.well-known/jwks.json endpoint.
+// When RS256 is enabled the RSA public key is advertised so that relying
+// parties can verify tokens independently. When the server is operating in
+// HS256 mode an empty key set is returned — the shared secret is never
+// exposed over the network.
 func (h *OAuthHandler) HandleJWKS(c *gin.Context) {
+	if h.keyManager == nil {
+		// HS256 mode — symmetric secret; nothing to publish.
+		c.JSON(http.StatusOK, gin.H{"keys": []interface{}{}})
+		return
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"keys": []gin.H{
-			{
-				"kty": "oct",
-				"use": "sig",
-				"alg": "HS256",
-				"kid": "default",
-			},
-		},
+		"keys": []interface{}{h.keyManager.JWK()},
 	})
 }
 

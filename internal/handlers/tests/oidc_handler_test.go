@@ -5,8 +5,8 @@ import (
 	"html/template"
 	"net/http"
 	"net/http/httptest"
-	"testing"
 	"strings"
+	"testing"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
+	"shieldgate/internal/crypto"
 	"shieldgate/internal/handlers"
 	"shieldgate/internal/middleware"
 	"shieldgate/internal/models"
@@ -32,7 +33,7 @@ func newOIDCRouter(
 	logger := logrus.New()
 	logger.SetLevel(logrus.FatalLevel)
 
-	handler := handlers.NewOAuthHandler(mockTenant, mockUser, mockClient, mockAuth, logger)
+	handler := handlers.NewOAuthHandler(mockTenant, mockUser, mockClient, mockAuth, nil, logger)
 	r := gin.New()
 	r.SetFuncMap(template.FuncMap{
 		"contains": func(s, substr string) bool { return strings.Contains(s, substr) },
@@ -44,8 +45,20 @@ func newOIDCRouter(
 
 // --- HandleJWKS ---
 
-func TestHandleJWKS_ReturnsWellFormedJWK(t *testing.T) {
-	r := newOIDCRouter(new(MockTenantService), new(MockUserService), new(MockClientService), new(MockAuthService))
+func TestHandleJWKS_RS256_ReturnsWellFormedJWK(t *testing.T) {
+	km, err := crypto.NewKeyManager("")
+	require.NoError(t, err)
+
+	gin.SetMode(gin.TestMode)
+	logger := logrus.New()
+	logger.SetLevel(logrus.FatalLevel)
+	handler := handlers.NewOAuthHandler(
+		new(MockTenantService), new(MockUserService),
+		new(MockClientService), new(MockAuthService),
+		km, logger,
+	)
+	r := gin.New()
+	handler.RegisterRoutes(r.Group(""))
 
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil)
@@ -62,10 +75,31 @@ func TestHandleJWKS_ReturnsWellFormedJWK(t *testing.T) {
 
 	key, ok := keys[0].(map[string]interface{})
 	require.True(t, ok)
-	assert.Equal(t, "oct", key["kty"])
+	assert.Equal(t, "RSA", key["kty"])
 	assert.Equal(t, "sig", key["use"])
-	assert.Equal(t, "HS256", key["alg"])
+	assert.Equal(t, "RS256", key["alg"])
 	assert.NotEmpty(t, key["kid"])
+	assert.NotEmpty(t, key["n"], "RSA modulus must be present")
+	assert.NotEmpty(t, key["e"], "RSA exponent must be present")
+}
+
+func TestHandleJWKS_HS256_ReturnsEmptyKeys(t *testing.T) {
+	// When no keyManager is wired the server operates in HS256 mode; the shared
+	// secret is never published via JWKS.
+	r := newOIDCRouter(new(MockTenantService), new(MockUserService), new(MockClientService), new(MockAuthService))
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil)
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var result map[string]interface{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &result))
+
+	keys, ok := result["keys"].([]interface{})
+	require.True(t, ok, "response must have 'keys' array")
+	assert.Empty(t, keys, "HS256 mode must not expose any keys")
 }
 
 // --- HandleDiscovery ---
@@ -125,7 +159,7 @@ func TestHandleUserInfo_ValidToken_ReturnsClaims(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	logger := logrus.New()
 	logger.SetLevel(logrus.FatalLevel)
-	handler := handlers.NewOAuthHandler(new(MockTenantService), new(MockUserService), new(MockClientService), mockAuth, logger)
+	handler := handlers.NewOAuthHandler(new(MockTenantService), new(MockUserService), new(MockClientService), mockAuth, nil, logger)
 
 	r := gin.New()
 	// Pre-inject tenant context (simulates TenantContext middleware with JWT)
@@ -154,7 +188,7 @@ func TestHandleUserInfo_MissingToken_Returns401(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	logger := logrus.New()
 	logger.SetLevel(logrus.FatalLevel)
-	handler := handlers.NewOAuthHandler(new(MockTenantService), new(MockUserService), new(MockClientService), new(MockAuthService), logger)
+	handler := handlers.NewOAuthHandler(new(MockTenantService), new(MockUserService), new(MockClientService), new(MockAuthService), nil, logger)
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
