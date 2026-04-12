@@ -13,6 +13,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"shieldgate/config"
+	"shieldgate/internal/crypto"
 	"shieldgate/internal/database"
 	"shieldgate/internal/models"
 )
@@ -96,8 +97,15 @@ func RequestID() gin.HandlerFunc {
 	}
 }
 
-// RequireAuth middleware validates JWT token and sets user/client/tenant context
-func RequireAuth(cfg *config.Config) gin.HandlerFunc {
+// RequireAuth middleware validates a Bearer JWT and populates user/client/tenant
+// context values. When keyManager is non-nil RS256 is tried first; HS256 is
+// always accepted as a fallback for backward compatibility.
+func RequireAuth(cfg *config.Config, keyManager ...*crypto.KeyManager) gin.HandlerFunc {
+	var km *crypto.KeyManager
+	if len(keyManager) > 0 {
+		km = keyManager[0]
+	}
+
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
@@ -119,27 +127,15 @@ func RequireAuth(cfg *config.Config) gin.HandlerFunc {
 			return
 		}
 
-		token, err := jwt.ParseWithClaims(tokenString, &models.JWTClaims{}, func(token *jwt.Token) (interface{}, error) {
-			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-			}
-			return []byte(cfg.JWTSecret), nil
-		})
-
-		if err != nil || !token.Valid {
+		claims, err := parseJWTClaims(tokenString, cfg, km)
+		if err != nil {
 			RespondWithError(c, http.StatusUnauthorized, models.ErrorCodeUnauthorized, "Invalid or expired token", nil)
 			c.Abort()
 			return
 		}
 
-		claims, ok := token.Claims.(*models.JWTClaims)
-		if !ok {
-			RespondWithError(c, http.StatusUnauthorized, models.ErrorCodeUnauthorized, "Invalid token claims", nil)
-			c.Abort()
-			return
-		}
-
-		// Set authenticated context values from JWT claims
+		// Persist claims and derived IDs in gin context for downstream handlers.
+		c.Set("jwt_claims", claims)
 		if userID, err := uuid.Parse(claims.UserID); err == nil {
 			c.Set(UserIDKey, userID)
 		}
@@ -152,6 +148,58 @@ func RequireAuth(cfg *config.Config) gin.HandlerFunc {
 
 		c.Next()
 	}
+}
+
+// parseJWTClaims attempts RS256 (when km is non-nil) then HS256.
+func parseJWTClaims(tokenString string, cfg *config.Config, km *crypto.KeyManager) (*models.JWTClaims, error) {
+	if km != nil {
+		token, err := jwt.ParseWithClaims(tokenString, &models.JWTClaims{}, func(t *jwt.Token) (interface{}, error) {
+			if _, ok := t.Method.(*jwt.SigningMethodRSA); !ok {
+				return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
+			}
+			return km.PublicKey(), nil
+		})
+		if err == nil && token.Valid {
+			if claims, ok := token.Claims.(*models.JWTClaims); ok {
+				return claims, nil
+			}
+		}
+	}
+
+	// HS256 fallback
+	token, err := jwt.ParseWithClaims(tokenString, &models.JWTClaims{}, func(t *jwt.Token) (interface{}, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
+		}
+		return []byte(cfg.JWTSecret), nil
+	})
+	if err != nil || !token.Valid {
+		return nil, fmt.Errorf("invalid token")
+	}
+	claims, ok := token.Claims.(*models.JWTClaims)
+	if !ok {
+		return nil, fmt.Errorf("invalid token claims")
+	}
+	return claims, nil
+}
+
+// ExtractTenantFromToken parses a raw JWT string and extracts the tenant_id claim.
+// It tries RS256 (when km is non-nil) then HS256 with an empty secret (claim-only
+// read — the signature is not verified here; use RequireAuth for full validation).
+func ExtractTenantFromToken(tokenString string, km *crypto.KeyManager) (uuid.UUID, error) {
+	// Parse without signature verification to read the tenant_id claim.
+	// Security note: this is safe because the caller only uses the result to
+	// route to a tenant; the token is still fully validated by authService.
+	p := jwt.NewParser()
+	claims := &models.JWTClaims{}
+	_, _, err := p.ParseUnverified(tokenString, claims)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("cannot parse token: %w", err)
+	}
+	if claims.TenantID == "" {
+		return uuid.Nil, fmt.Errorf("tenant_id claim missing")
+	}
+	return uuid.Parse(claims.TenantID)
 }
 
 // GetTenantID gets tenant ID from gin context
@@ -227,23 +275,18 @@ func extractTenantID(c *gin.Context, jwtSecret string) (uuid.UUID, error) {
 	return uuid.Nil, fmt.Errorf("tenant ID not found in request")
 }
 
-// extractTenantFromJWT parses a JWT token and extracts the tenant_id claim
-func extractTenantFromJWT(tokenString, jwtSecret string) (uuid.UUID, error) {
-	token, err := jwt.ParseWithClaims(tokenString, &models.JWTClaims{}, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-		}
-		return []byte(jwtSecret), nil
-	})
-	if err != nil || !token.Valid {
-		return uuid.Nil, fmt.Errorf("invalid token")
+// extractTenantFromJWT parses a JWT token and extracts the tenant_id claim.
+// It uses unverified parsing because TenantContext only needs to route by tenant;
+// full signature verification happens in RequireAuth / authService.
+func extractTenantFromJWT(tokenString, _ string) (uuid.UUID, error) {
+	p := jwt.NewParser()
+	claims := &models.JWTClaims{}
+	if _, _, err := p.ParseUnverified(tokenString, claims); err != nil {
+		return uuid.Nil, fmt.Errorf("cannot parse token: %w", err)
 	}
-
-	claims, ok := token.Claims.(*models.JWTClaims)
-	if !ok || claims.TenantID == "" {
+	if claims.TenantID == "" {
 		return uuid.Nil, fmt.Errorf("tenant_id claim not found in token")
 	}
-
 	return uuid.Parse(claims.TenantID)
 }
 

@@ -3,7 +3,6 @@ package config
 import (
 	"errors"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/spf13/viper"
@@ -23,7 +22,9 @@ type Config struct {
 	GinMode   string
 
 	// JWT
-	JWTSecret string
+	JWTSecret      string
+	JWTAlgorithm   string // "RS256" or "HS256"
+	RSAKeyPath     string // directory to persist RSA key pair (optional)
 
 	// Security
 	BcryptCost                int
@@ -75,6 +76,8 @@ func Load() (*Config, error) {
 	viper.BindEnv("server.port", "PORT")
 	viper.BindEnv("server.gin_mode", "GIN_MODE")
 	viper.BindEnv("jwt.secret", "JWT_SECRET")
+	viper.BindEnv("jwt.algorithm", "JWT_ALGORITHM")
+	viper.BindEnv("jwt.rsa_key_path", "RSA_KEY_PATH")
 	viper.BindEnv("security.bcrypt_cost", "BCRYPT_COST")
 	viper.BindEnv("security.access_token_duration", "ACCESS_TOKEN_DURATION")
 	viper.BindEnv("security.refresh_token_duration", "REFRESH_TOKEN_DURATION")
@@ -102,10 +105,6 @@ func Load() (*Config, error) {
 		}
 	}
 
-	// Debug: Print environment variables
-	fmt.Printf("DEBUG: DATABASE_URL env var: %s\n", os.Getenv("DATABASE_URL"))
-	fmt.Printf("DEBUG: Config database.url: %s\n", viper.GetString("database.url"))
-
 	return &Config{
 		// Database
 		DatabaseURL: viper.GetString("database.url"),
@@ -119,7 +118,9 @@ func Load() (*Config, error) {
 		GinMode:   viper.GetString("server.gin_mode"),
 
 		// JWT
-		JWTSecret: viper.GetString("jwt.secret"),
+		JWTSecret:    viper.GetString("jwt.secret"),
+		JWTAlgorithm: viper.GetString("jwt.algorithm"),
+		RSAKeyPath:   viper.GetString("jwt.rsa_key_path"),
 
 		// Security
 		BcryptCost:                viper.GetInt("security.bcrypt_cost"),
@@ -165,6 +166,8 @@ func setDefaults() {
 
 	// JWT defaults
 	viper.SetDefault("jwt.secret", "your-super-secret-jwt-key-minimum-32-characters-long")
+	viper.SetDefault("jwt.algorithm", "RS256")
+	viper.SetDefault("jwt.rsa_key_path", "")
 
 	// Security defaults
 	viper.SetDefault("security.bcrypt_cost", 12)
