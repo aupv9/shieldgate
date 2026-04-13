@@ -68,22 +68,20 @@ type RefreshTokenRepository interface {
 
 // Repositories aggregates all repository interfaces
 type Repositories struct {
-	Tenant            TenantRepository
-	User              UserRepository
-	Client            ClientRepository
-	AuthCode          AuthCodeRepository
-	AccessToken       AccessTokenRepository
-	RefreshToken      RefreshTokenRepository
-	Role              RoleRepository
-	Permission        PermissionRepository
-	UserRole          UserRoleRepository
-	RolePermission    RolePermissionRepository
-	AuditLog          AuditLogRepository
-	EmailTemplate     EmailTemplateRepository
-	EmailQueue        EmailQueueRepository
-	EmailVerification EmailVerificationRepository
-	PasswordReset     PasswordResetRepository
+	Tenant        TenantRepository
+	User          UserRepository
+	Client        ClientRepository
+	AuthCode      AuthCodeRepository
+	AccessToken   AccessTokenRepository
+	RefreshToken  RefreshTokenRepository
+	// Phase 5 repos
+	MFASecret     MFASecretRepository
+	MFABackupCode MFABackupCodeRepository
+	Session       SessionRepository
+	LoginAttempt  LoginAttemptRepository
 }
+
+// --- legacy interfaces kept for backward compatibility ---
 
 // RoleRepository defines the interface for role data operations
 type RoleRepository interface {
@@ -118,7 +116,7 @@ type UserRoleRepository interface {
 	DeleteExpired(ctx context.Context) error
 }
 
-// RolePermissionRepository defines the interface for role-permission relationship data operations
+// RolePermissionRepository defines the interface for role-permission data operations
 type RolePermissionRepository interface {
 	Create(ctx context.Context, rolePermission *models.RolePermission) error
 	GetByID(ctx context.Context, rolePermissionID uuid.UUID) (*models.RolePermission, error)
