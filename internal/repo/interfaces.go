@@ -68,17 +68,22 @@ type RefreshTokenRepository interface {
 
 // Repositories aggregates all repository interfaces
 type Repositories struct {
-	Tenant        TenantRepository
-	User          UserRepository
-	Client        ClientRepository
-	AuthCode      AuthCodeRepository
-	AccessToken   AccessTokenRepository
-	RefreshToken  RefreshTokenRepository
+	Tenant       TenantRepository
+	User         UserRepository
+	Client       ClientRepository
+	AuthCode     AuthCodeRepository
+	AccessToken  AccessTokenRepository
+	RefreshToken RefreshTokenRepository
 	// Phase 5 repos
 	MFASecret     MFASecretRepository
 	MFABackupCode MFABackupCodeRepository
 	Session       SessionRepository
 	LoginAttempt  LoginAttemptRepository
+	// Phase 7 repos
+	SocialAccount  SocialAccountRepository
+	SocialProvider SocialProviderRepository
+	Webhook        WebhookRepository
+	APIKey         APIKeyRepository
 }
 
 // --- legacy interfaces kept for backward compatibility ---
