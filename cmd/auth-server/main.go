@@ -68,6 +68,9 @@ func main() {
 	authService := services.NewAuthService(repos, cfg, logger)
 	mfaService := services.NewMFAService(repos, logger)
 	sessionService := services.NewSessionService(repos, logger)
+	socialService := services.NewSocialLoginService(repos, logger)
+	webhookService := services.NewWebhookService(repos, logger)
+	apiKeyService := services.NewAPIKeyService(repos, logger)
 
 	// Background workers
 	go runSessionCleanup(rootCtx, sessionService, logger)
@@ -89,8 +92,13 @@ func main() {
 	oauthHandler := handlers.NewOAuthHandler(tenantService, userService, clientService, authService, logger)
 	mfaHandler := handlers.NewMFAHandler(mfaService, logger)
 	sessionHandler := handlers.NewSessionHandler(sessionService, logger)
+	socialHandler := handlers.NewSocialHandler(socialService, logger)
+	webhookHandler := handlers.NewWebhookHandler(webhookService, logger)
+	apiKeyHandler := handlers.NewAPIKeyHandler(apiKeyService, logger)
 
-	setupRoutes(cfg, db, redisClient, router, tenantHandler, userHandler, clientHandler, oauthHandler, mfaHandler, sessionHandler)
+	setupRoutes(cfg, db, redisClient, router,
+		tenantHandler, userHandler, clientHandler, oauthHandler,
+		mfaHandler, sessionHandler, socialHandler, webhookHandler, apiKeyHandler)
 
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%s", cfg.Port),
@@ -162,6 +170,9 @@ func setupRoutes(
 	oauthHandler *handlers.OAuthHandler,
 	mfaHandler *handlers.MFAHandler,
 	sessionHandler *handlers.SessionHandler,
+	socialHandler *handlers.SocialHandler,
+	webhookHandler *handlers.WebhookHandler,
+	apiKeyHandler *handlers.APIKeyHandler,
 ) {
 	// Health check
 	router.GET("/health", func(c *gin.Context) {
@@ -206,6 +217,9 @@ func setupRoutes(
 		clientHandler.RegisterRoutes(api.Group("/clients"))
 		mfaHandler.RegisterRoutes(api.Group("/mfa"))
 		sessionHandler.RegisterRoutes(api.Group("/sessions"))
+		socialHandler.RegisterRoutes(api.Group("/social"))
+		webhookHandler.RegisterRoutes(api.Group("/webhooks"))
+		apiKeyHandler.RegisterRoutes(api.Group("/apikeys"))
 	}
 
 	// Auth endpoints get brute-force protection (applied before RequireAuth)

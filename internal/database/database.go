@@ -192,6 +192,98 @@ func Migrate(db *gorm.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_login_attempts_ip ON login_attempts(ip_address)`,
 		`CREATE INDEX IF NOT EXISTS idx_login_attempts_email ON login_attempts(email)`,
 		`CREATE INDEX IF NOT EXISTS idx_login_attempts_created ON login_attempts(created_at)`,
+
+		// ── social_providers (Phase 7) ────────────────────────────────────────
+		`CREATE TABLE IF NOT EXISTS social_providers (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL,
+			provider VARCHAR(50) NOT NULL,
+			client_id VARCHAR(255) NOT NULL,
+			client_secret VARCHAR(255) NOT NULL,
+			scopes JSONB NOT NULL DEFAULT '[]',
+			is_active BOOLEAN NOT NULL DEFAULT true,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+			updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+			deleted_at TIMESTAMP WITH TIME ZONE
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_social_providers_tenant_provider ON social_providers(tenant_id, provider) WHERE deleted_at IS NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_social_providers_tenant ON social_providers(tenant_id)`,
+
+		// ── social_accounts (Phase 7) ─────────────────────────────────────────
+		`CREATE TABLE IF NOT EXISTS social_accounts (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL,
+			user_id UUID NOT NULL,
+			provider VARCHAR(50) NOT NULL,
+			external_id VARCHAR(255) NOT NULL,
+			email VARCHAR(255),
+			name VARCHAR(255),
+			avatar VARCHAR(500),
+			access_token TEXT,
+			refresh_token TEXT,
+			token_expires_at TIMESTAMP WITH TIME ZONE,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+			updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_social_accounts_provider_external ON social_accounts(provider, external_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_social_accounts_user ON social_accounts(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_social_accounts_tenant ON social_accounts(tenant_id)`,
+
+		// ── webhook_endpoints (Phase 7) ───────────────────────────────────────
+		`CREATE TABLE IF NOT EXISTS webhook_endpoints (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL,
+			url VARCHAR(500) NOT NULL,
+			secret VARCHAR(255) NOT NULL,
+			events JSONB NOT NULL DEFAULT '[]',
+			is_active BOOLEAN NOT NULL DEFAULT true,
+			description VARCHAR(500),
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+			updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+			deleted_at TIMESTAMP WITH TIME ZONE
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_webhooks_tenant_id ON webhook_endpoints(tenant_id)`,
+
+		// ── webhook_deliveries (Phase 7) ──────────────────────────────────────
+		`CREATE TABLE IF NOT EXISTS webhook_deliveries (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			webhook_id UUID NOT NULL,
+			tenant_id UUID NOT NULL,
+			event VARCHAR(255) NOT NULL,
+			payload TEXT,
+			status_code INTEGER,
+			response_body TEXT,
+			attempt INTEGER NOT NULL DEFAULT 1,
+			success BOOLEAN NOT NULL DEFAULT false,
+			error_message TEXT,
+			delivered_at TIMESTAMP WITH TIME ZONE,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_webhook_id ON webhook_deliveries(webhook_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_tenant ON webhook_deliveries(tenant_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_event ON webhook_deliveries(event)`,
+		`CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_created ON webhook_deliveries(created_at)`,
+
+		// ── api_keys (Phase 7) ────────────────────────────────────────────────
+		`CREATE TABLE IF NOT EXISTS api_keys (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL,
+			user_id UUID,
+			name VARCHAR(255) NOT NULL,
+			key_hash VARCHAR(255) NOT NULL,
+			last_four VARCHAR(4) NOT NULL,
+			prefix VARCHAR(10) NOT NULL,
+			scopes JSONB NOT NULL DEFAULT '[]',
+			expires_at TIMESTAMP WITH TIME ZONE,
+			last_used_at TIMESTAMP WITH TIME ZONE,
+			revoked_at TIMESTAMP WITH TIME ZONE,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+			updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+			deleted_at TIMESTAMP WITH TIME ZONE
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash) WHERE deleted_at IS NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_api_keys_tenant_id ON api_keys(tenant_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id)`,
 	}
 
 	for i, m := range migrations {
