@@ -109,14 +109,51 @@ type SessionService interface {
 	CleanupExpired(ctx context.Context) error
 }
 
+// SocialLoginService manages social OAuth2 provider configuration and account linking.
+type SocialLoginService interface {
+	ConfigureProvider(ctx context.Context, tenantID uuid.UUID, provider, clientID, clientSecret string, scopes []string) (*models.SocialProvider, error)
+	GetProvider(ctx context.Context, tenantID uuid.UUID, provider string) (*models.SocialProvider, error)
+	ListProviders(ctx context.Context, tenantID uuid.UUID) ([]*models.SocialProvider, error)
+	UpdateProvider(ctx context.Context, tenantID uuid.UUID, provider, clientID, clientSecret string, scopes []string, isActive bool) (*models.SocialProvider, error)
+	DeleteProvider(ctx context.Context, tenantID uuid.UUID, provider string) error
+	LinkAccount(ctx context.Context, tenantID, userID uuid.UUID, account *models.SocialAccount) error
+	UnlinkAccount(ctx context.Context, tenantID, userID uuid.UUID, provider string) error
+	ListLinkedAccounts(ctx context.Context, tenantID, userID uuid.UUID) ([]*models.SocialAccount, error)
+	FindOrCreateUser(ctx context.Context, tenantID uuid.UUID, account *models.SocialAccount) (*models.User, error)
+}
+
+// WebhookService manages webhook endpoint configuration and event delivery.
+type WebhookService interface {
+	Create(ctx context.Context, tenantID uuid.UUID, req *models.CreateWebhookRequest) (*models.WebhookEndpoint, error)
+	GetByID(ctx context.Context, tenantID, webhookID uuid.UUID) (*models.WebhookEndpoint, error)
+	Update(ctx context.Context, tenantID, webhookID uuid.UUID, req *models.UpdateWebhookRequest) (*models.WebhookEndpoint, error)
+	Delete(ctx context.Context, tenantID, webhookID uuid.UUID) error
+	List(ctx context.Context, tenantID uuid.UUID, limit, offset int) (*models.PaginatedResponse, error)
+	Dispatch(ctx context.Context, tenantID uuid.UUID, event string, payload interface{}) error
+	ListDeliveries(ctx context.Context, tenantID, webhookID uuid.UUID, limit, offset int) (*models.PaginatedResponse, error)
+}
+
+// APIKeyService manages API key lifecycle.
+type APIKeyService interface {
+	Create(ctx context.Context, tenantID uuid.UUID, userID *uuid.UUID, req *models.CreateAPIKeyRequest) (*models.APIKeyCreateResponse, error)
+	GetByID(ctx context.Context, tenantID, keyID uuid.UUID) (*models.APIKey, error)
+	List(ctx context.Context, tenantID uuid.UUID, userID *uuid.UUID, limit, offset int) (*models.PaginatedResponse, error)
+	Revoke(ctx context.Context, tenantID, keyID uuid.UUID) error
+	Delete(ctx context.Context, tenantID, keyID uuid.UUID) error
+	Validate(ctx context.Context, rawKey string) (*models.APIKey, error)
+}
+
 // Services aggregates all service interfaces
 type Services struct {
-	Tenant     TenantService
-	User       UserService
-	Client     ClientService
-	Auth       AuthService
-	MFA        MFAService
-	Session    SessionService
+	Tenant      TenantService
+	User        UserService
+	Client      ClientService
+	Auth        AuthService
+	MFA         MFAService
+	Session     SessionService
+	SocialLogin SocialLoginService
+	Webhook     WebhookService
+	APIKey      APIKeyService
 }
 
 // --- legacy service interfaces (used by phase-2/3 handlers, kept for compilation) ---
