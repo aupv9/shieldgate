@@ -71,9 +71,12 @@ func main() {
 	socialService := services.NewSocialLoginService(repos, logger)
 	webhookService := services.NewWebhookService(repos, logger)
 	apiKeyService := services.NewAPIKeyService(repos, logger)
+	consentService := services.NewConsentService(repos, logger)
+	blocklistService := services.NewBlocklistService(repos, logger)
 
 	// Background workers
 	go runSessionCleanup(rootCtx, sessionService, logger)
+	go runBlocklistCleanup(rootCtx, blocklistService, logger)
 
 	if cfg.GinMode != "" {
 		gin.SetMode(cfg.GinMode)
@@ -95,10 +98,13 @@ func main() {
 	socialHandler := handlers.NewSocialHandler(socialService, logger)
 	webhookHandler := handlers.NewWebhookHandler(webhookService, logger)
 	apiKeyHandler := handlers.NewAPIKeyHandler(apiKeyService, logger)
+	consentHandler := handlers.NewConsentHandler(consentService, logger)
+	socialCallbackHandler := handlers.NewSocialCallbackHandler(socialService, sessionService, cfg, logger)
 
 	setupRoutes(cfg, db, redisClient, router,
 		tenantHandler, userHandler, clientHandler, oauthHandler,
-		mfaHandler, sessionHandler, socialHandler, webhookHandler, apiKeyHandler)
+		mfaHandler, sessionHandler, socialHandler, webhookHandler,
+		apiKeyHandler, consentHandler, socialCallbackHandler, apiKeyService)
 
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%s", cfg.Port),
@@ -159,6 +165,21 @@ func runSessionCleanup(ctx context.Context, svc services.SessionService, logger 
 	}
 }
 
+func runBlocklistCleanup(ctx context.Context, svc services.BlocklistService, logger *logrus.Logger) {
+	ticker := time.NewTicker(1 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := svc.Cleanup(ctx); err != nil {
+				logger.WithError(err).Error("blocklist cleanup failed")
+			}
+		}
+	}
+}
+
 func setupRoutes(
 	cfg *config.Config,
 	db *gorm.DB,
@@ -173,6 +194,9 @@ func setupRoutes(
 	socialHandler *handlers.SocialHandler,
 	webhookHandler *handlers.WebhookHandler,
 	apiKeyHandler *handlers.APIKeyHandler,
+	consentHandler *handlers.ConsentHandler,
+	socialCallbackHandler *handlers.SocialCallbackHandler,
+	apiKeySvc services.APIKeyService,
 ) {
 	// Health check
 	router.GET("/health", func(c *gin.Context) {
@@ -183,7 +207,9 @@ func setupRoutes(
 		if db != nil {
 			sqlDB, err := db.DB()
 			if err != nil || sqlDB.PingContext(ctx) != nil {
-				dbStatus = "error"; status = "degraded"; httpStatus = http.StatusServiceUnavailable
+				dbStatus = "error"
+				status = "degraded"
+				httpStatus = http.StatusServiceUnavailable
 			}
 		} else {
 			dbStatus = "disabled"
@@ -191,11 +217,16 @@ func setupRoutes(
 		if redisClient == nil {
 			redisStatus = "disabled"
 		} else if err := redisClient.Ping(ctx); err != nil {
-			redisStatus = "error"; status = "degraded"; httpStatus = http.StatusServiceUnavailable
+			redisStatus = "error"
+			status = "degraded"
+			httpStatus = http.StatusServiceUnavailable
 		}
 		c.JSON(httpStatus, gin.H{
-			"status": status, "db": dbStatus, "redis": redisStatus,
-			"timestamp": time.Now().UTC(), "version": "1.0.0",
+			"status":      status,
+			"db":          dbStatus,
+			"redis":       redisStatus,
+			"timestamp":   time.Now().UTC(),
+			"version":     "1.0.0",
 			"environment": cfg.GinMode,
 		})
 	})
@@ -203,7 +234,10 @@ func setupRoutes(
 	// OAuth 2.0 / OIDC endpoints
 	oauthHandler.RegisterRoutes(router.Group(""))
 
-	// Management API (authenticated)
+	// Social OAuth2 callback (unauthenticated — provider redirects here)
+	socialCallbackHandler.RegisterRoutes(router.Group("/oauth/social"))
+
+	// Management API (authenticated via JWT Bearer or API key)
 	bf := middleware.BruteForceProtection(middleware.BruteForceConfig{
 		MaxFailures: 5,
 		Window:      15 * time.Minute,
@@ -220,6 +254,16 @@ func setupRoutes(
 		socialHandler.RegisterRoutes(api.Group("/social"))
 		webhookHandler.RegisterRoutes(api.Group("/webhooks"))
 		apiKeyHandler.RegisterRoutes(api.Group("/apikeys"))
+		consentHandler.RegisterRoutes(api.Group("/consents"))
+	}
+
+	// API-key-only routes (machine-to-machine)
+	apiKeyRoutes := router.Group("/v1/machine")
+	apiKeyRoutes.Use(middleware.APIKeyAuth(apiKeySvc))
+	{
+		apiKeyRoutes.GET("/ping", func(c *gin.Context) {
+			c.JSON(http.StatusOK, gin.H{"status": "ok", "auth": "api_key"})
+		})
 	}
 
 	// Auth endpoints get brute-force protection (applied before RequireAuth)

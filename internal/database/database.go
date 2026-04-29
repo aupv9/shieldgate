@@ -284,6 +284,35 @@ func Migrate(db *gorm.DB) error {
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash) WHERE deleted_at IS NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_api_keys_tenant_id ON api_keys(tenant_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id)`,
+
+		// ── consent_records (Phase 16) ────────────────────────────────────────
+		`CREATE TABLE IF NOT EXISTS consent_records (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL,
+			user_id UUID NOT NULL,
+			client_id UUID NOT NULL,
+			scopes JSONB NOT NULL DEFAULT '[]',
+			expires_at TIMESTAMP WITH TIME ZONE,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+			updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+			deleted_at TIMESTAMP WITH TIME ZONE
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_consent_records_tenant_user_client ON consent_records(tenant_id, user_id, client_id) WHERE deleted_at IS NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_consent_records_user ON consent_records(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_consent_records_tenant ON consent_records(tenant_id)`,
+
+		// ── token_blocklist (Phase 16) ────────────────────────────────────────
+		`CREATE TABLE IF NOT EXISTS token_blocklists (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			jti VARCHAR(255) NOT NULL,
+			tenant_id UUID NOT NULL,
+			user_id UUID,
+			expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_blocklist_jti ON token_blocklists(jti)`,
+		`CREATE INDEX IF NOT EXISTS idx_blocklist_tenant ON token_blocklists(tenant_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_blocklist_expires ON token_blocklists(expires_at)`,
 	}
 
 	for i, m := range migrations {

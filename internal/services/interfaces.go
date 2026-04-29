@@ -143,6 +143,21 @@ type APIKeyService interface {
 	Validate(ctx context.Context, rawKey string) (*models.APIKey, error)
 }
 
+// ConsentService manages OAuth2 user consent grants.
+type ConsentService interface {
+	HasConsent(ctx context.Context, tenantID, userID, clientID uuid.UUID, scopes []string) (bool, error)
+	GrantConsent(ctx context.Context, tenantID, userID, clientID uuid.UUID, scopes []string, expiresAt *time.Time) error
+	RevokeConsent(ctx context.Context, tenantID, userID, clientID uuid.UUID) error
+	ListConsents(ctx context.Context, tenantID, userID uuid.UUID) ([]*models.ConsentRecord, error)
+}
+
+// BlocklistService checks and manages the token revocation blocklist.
+type BlocklistService interface {
+	Block(ctx context.Context, jti string, tenantID, userID uuid.UUID, expiresAt time.Time) error
+	IsBlocked(ctx context.Context, jti string) (bool, error)
+	Cleanup(ctx context.Context) error
+}
+
 // Services aggregates all service interfaces
 type Services struct {
 	Tenant      TenantService
@@ -154,6 +169,8 @@ type Services struct {
 	SocialLogin SocialLoginService
 	Webhook     WebhookService
 	APIKey      APIKeyService
+	Consent     ConsentService
+	Blocklist   BlocklistService
 }
 
 // --- legacy service interfaces (used by phase-2/3 handlers, kept for compilation) ---

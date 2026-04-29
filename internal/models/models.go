@@ -900,3 +900,43 @@ func (r *Role) HasPermission(permissionName string) bool {
 func (ur *UserRole) IsExpired() bool {
 	return ur.ExpiresAt != nil && time.Now().After(*ur.ExpiresAt)
 }
+
+// ConsentRecord stores a user's OAuth2 consent grant for a client+scope set.
+type ConsentRecord struct {
+	ID        uuid.UUID      `json:"id" gorm:"type:uuid;primary_key;default:gen_random_uuid()"`
+	TenantID  uuid.UUID      `json:"tenant_id" gorm:"type:uuid;not null;index:idx_consent_tenant"`
+	UserID    uuid.UUID      `json:"user_id" gorm:"type:uuid;not null;index:idx_consent_user"`
+	ClientID  uuid.UUID      `json:"client_id" gorm:"type:uuid;not null;index:idx_consent_client"`
+	Scopes    StringArray    `json:"scopes" gorm:"type:jsonb;not null;default:'[]'"`
+	ExpiresAt *time.Time     `json:"expires_at"`
+	CreatedAt time.Time      `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt time.Time      `json:"updated_at" gorm:"autoUpdateTime"`
+	DeletedAt gorm.DeletedAt `json:"-" gorm:"index"`
+}
+
+// TokenBlocklist holds revoked JWT IDs (jti) so they are rejected on validation.
+type TokenBlocklist struct {
+	ID        uuid.UUID `json:"id" gorm:"type:uuid;primary_key;default:gen_random_uuid()"`
+	JTI       string    `json:"jti" gorm:"not null;size:255;uniqueIndex:idx_blocklist_jti"`
+	TenantID  uuid.UUID `json:"tenant_id" gorm:"type:uuid;not null;index:idx_blocklist_tenant"`
+	UserID    uuid.UUID `json:"user_id" gorm:"type:uuid;index:idx_blocklist_user"`
+	ExpiresAt time.Time `json:"expires_at" gorm:"not null;index:idx_blocklist_expires"`
+	CreatedAt time.Time `json:"created_at" gorm:"autoCreateTime"`
+}
+
+// SocialOAuthState is a temporary state object used during the social OAuth2 callback flow.
+type SocialOAuthState struct {
+	Provider   string    `json:"provider"`
+	TenantID   uuid.UUID `json:"tenant_id"`
+	ReturnURL  string    `json:"return_url"`
+	CSRFToken  string    `json:"csrf_token"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+// SocialCallbackRequest represents the incoming query params on the OAuth2 callback.
+type SocialCallbackRequest struct {
+	Code             string `form:"code"`
+	State            string `form:"state"`
+	Error            string `form:"error"`
+	ErrorDescription string `form:"error_description"`
+}
