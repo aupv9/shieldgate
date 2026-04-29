@@ -84,6 +84,16 @@ type Repositories struct {
 	SocialProvider SocialProviderRepository
 	Webhook        WebhookRepository
 	APIKey         APIKeyRepository
+	// Phase 16 repos
+	Consent   ConsentRepository
+	Blocklist BlocklistRepository
+}
+
+// BlocklistRepository stores revoked token JTIs so they cannot be reused.
+type BlocklistRepository interface {
+	Add(ctx context.Context, entry *models.TokenBlocklist) error
+	IsBlocked(ctx context.Context, jti string) (bool, error)
+	DeleteExpired(ctx context.Context) error
 }
 
 // --- legacy interfaces kept for backward compatibility ---
