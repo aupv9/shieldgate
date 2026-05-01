@@ -313,6 +313,30 @@ func Migrate(db *gorm.DB) error {
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_blocklist_jti ON token_blocklists(jti)`,
 		`CREATE INDEX IF NOT EXISTS idx_blocklist_tenant ON token_blocklists(tenant_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_blocklist_expires ON token_blocklists(expires_at)`,
+
+		// ── device_codes (Phase 18) ───────────────────────────────────────────
+		`CREATE TABLE IF NOT EXISTS device_codes (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL,
+			client_id UUID NOT NULL,
+			device_code VARCHAR(255) NOT NULL,
+			user_code VARCHAR(20) NOT NULL,
+			verification_uri VARCHAR(500) NOT NULL,
+			scope TEXT,
+			status VARCHAR(50) NOT NULL DEFAULT 'pending',
+			user_id UUID,
+			expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+			last_polled_at TIMESTAMP WITH TIME ZONE,
+			interval INTEGER NOT NULL DEFAULT 5,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+			updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+			deleted_at TIMESTAMP WITH TIME ZONE
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_device_codes_device_code ON device_codes(device_code) WHERE deleted_at IS NULL`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_device_codes_user_code ON device_codes(user_code) WHERE deleted_at IS NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_device_codes_tenant ON device_codes(tenant_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_device_codes_expires ON device_codes(expires_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_device_codes_status ON device_codes(status)`,
 	}
 
 	for i, m := range migrations {

@@ -27,5 +27,7 @@ func NewRepositories(db *gorm.DB) *repo.Repositories {
 		// Phase 16
 		Consent:   NewConsentRepository(db),
 		Blocklist: NewBlocklistRepository(db),
+		// Phase 18
+		DeviceCode: NewDeviceCodeRepository(db),
 	}
 }
