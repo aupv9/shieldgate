@@ -87,6 +87,8 @@ type Repositories struct {
 	// Phase 16 repos
 	Consent   ConsentRepository
 	Blocklist BlocklistRepository
+	// Phase 18 repos
+	DeviceCode DeviceCodeRepository
 }
 
 // BlocklistRepository stores revoked token JTIs so they cannot be reused.
