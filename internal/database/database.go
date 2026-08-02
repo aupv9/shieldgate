@@ -104,6 +104,7 @@ func Migrate(db *gorm.DB) error {
 			scope TEXT,
 			code_challenge VARCHAR(255),
 			code_challenge_method VARCHAR(50),
+			used_at TIMESTAMP WITH TIME ZONE,
 			expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
 			created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 		)`,
@@ -120,6 +121,7 @@ func Migrate(db *gorm.DB) error {
 			token VARCHAR(255) NOT NULL,
 			client_id UUID NOT NULL,
 			user_id UUID NOT NULL,
+			family_id UUID,
 			scope TEXT,
 			expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
 			created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
@@ -137,6 +139,9 @@ func Migrate(db *gorm.DB) error {
 			token VARCHAR(255) NOT NULL,
 			client_id UUID NOT NULL,
 			user_id UUID NOT NULL,
+			family_id UUID,
+			scope TEXT,
+			revoked_at TIMESTAMP WITH TIME ZONE,
 			expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
 			created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 		)`,
@@ -145,6 +150,17 @@ func Migrate(db *gorm.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_refresh_tokens_client_id ON refresh_tokens(client_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user_id ON refresh_tokens(user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_refresh_tokens_expires_at ON refresh_tokens(expires_at)`,
+
+		// Phase 1 hardening: columns for token hashing, rotation families,
+		// and authorization-code reuse detection on databases created before
+		// these fields existed (ALTER ... IF NOT EXISTS keeps this idempotent)
+		`ALTER TABLE authorization_codes ADD COLUMN IF NOT EXISTS used_at TIMESTAMP WITH TIME ZONE`,
+		`ALTER TABLE access_tokens ADD COLUMN IF NOT EXISTS family_id UUID`,
+		`ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS family_id UUID`,
+		`ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS scope TEXT`,
+		`ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMP WITH TIME ZONE`,
+		`CREATE INDEX IF NOT EXISTS idx_access_tokens_family_id ON access_tokens(family_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_refresh_tokens_family_id ON refresh_tokens(family_id)`,
 	}
 
 	// Execute each migration

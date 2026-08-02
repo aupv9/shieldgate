@@ -71,8 +71,15 @@ type AuthService interface {
 
 	// Token Management
 	GenerateTokens(ctx context.Context, tenantID, clientID, userID uuid.UUID, scope string, includeIDToken bool) (*models.TokenResponse, error)
-	RefreshTokens(ctx context.Context, tenantID uuid.UUID, refreshToken, clientID, clientSecret string) (*models.TokenResponse, error)
-	RevokeToken(ctx context.Context, tenantID uuid.UUID, token, tokenTypeHint string) error
+	// GenerateClientCredentialsTokens issues an access token for the client
+	// credentials grant — no refresh token, subject is the client itself
+	GenerateClientCredentialsTokens(ctx context.Context, tenantID uuid.UUID, client *models.Client, scope string) (*models.TokenResponse, error)
+	// RefreshTokens rotates the refresh token. requestedScope, when non-empty,
+	// must be a subset of the originally granted scope
+	RefreshTokens(ctx context.Context, tenantID uuid.UUID, refreshToken, clientID, requestedScope string) (*models.TokenResponse, error)
+	// RevokeToken revokes a token owned by requestingClientID (RFC 7009 §2.1:
+	// tokens belonging to other clients are silently ignored)
+	RevokeToken(ctx context.Context, tenantID uuid.UUID, token, tokenTypeHint string, requestingClientID uuid.UUID) error
 	IntrospectToken(ctx context.Context, tenantID uuid.UUID, token string) (*models.IntrospectionResponse, error)
 
 	// Token Validation
