@@ -44,6 +44,10 @@ type ClientRepository interface {
 type AuthCodeRepository interface {
 	Create(ctx context.Context, code *models.AuthorizationCode) error
 	GetByCode(ctx context.Context, tenantID uuid.UUID, code string) (*models.AuthorizationCode, error)
+	// Consume atomically marks the code as used and returns it. If the code was
+	// already consumed it returns the stored code together with
+	// models.ErrAuthCodeAlreadyUsed so the caller can revoke issued tokens.
+	Consume(ctx context.Context, tenantID uuid.UUID, code string) (*models.AuthorizationCode, error)
 	Delete(ctx context.Context, tenantID uuid.UUID, code string) error
 	DeleteExpired(ctx context.Context) error
 }
@@ -55,15 +59,20 @@ type AccessTokenRepository interface {
 	Delete(ctx context.Context, tenantID uuid.UUID, token string) error
 	DeleteExpired(ctx context.Context) error
 	DeleteByUserID(ctx context.Context, tenantID, userID uuid.UUID) error
+	DeleteByFamilyID(ctx context.Context, tenantID, familyID uuid.UUID) error
 }
 
 // RefreshTokenRepository defines the interface for refresh token data operations
 type RefreshTokenRepository interface {
 	Create(ctx context.Context, token *models.RefreshToken) error
 	GetByToken(ctx context.Context, tenantID uuid.UUID, token string) (*models.RefreshToken, error)
+	// Revoke marks a token as revoked without deleting it, so replays of a
+	// rotated token can be detected
+	Revoke(ctx context.Context, tenantID uuid.UUID, token string) error
 	Delete(ctx context.Context, tenantID uuid.UUID, token string) error
 	DeleteExpired(ctx context.Context) error
 	DeleteByUserID(ctx context.Context, tenantID, userID uuid.UUID) error
+	DeleteByFamilyID(ctx context.Context, tenantID, familyID uuid.UUID) error
 }
 
 // Repositories aggregates all repository interfaces

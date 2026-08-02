@@ -2,6 +2,8 @@ package services
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 
 	"shieldgate/internal/models"
@@ -9,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type clientServiceImpl struct {
@@ -39,10 +42,19 @@ func (s *clientServiceImpl) Create(ctx context.Context, tenantID uuid.UUID, req 
 	// Generate client ID
 	clientID := generateClientID()
 
-	// Generate client secret for confidential clients
-	var clientSecret string
+	// Generate client secret for confidential clients. Only the bcrypt hash is
+	// stored; the plaintext is returned exactly once in the create response.
+	var plainSecret, secretHash string
 	if !req.IsPublic {
-		clientSecret = generateClientSecret()
+		var err error
+		plainSecret, err = generateClientSecret()
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate client secret: %w", err)
+		}
+		secretHash, err = hashClientSecret(plainSecret)
+		if err != nil {
+			return nil, fmt.Errorf("failed to hash client secret: %w", err)
+		}
 	}
 
 	// Create client
@@ -50,7 +62,7 @@ func (s *clientServiceImpl) Create(ctx context.Context, tenantID uuid.UUID, req 
 		ID:           uuid.New(),
 		TenantID:     tenantID,
 		ClientID:     clientID,
-		ClientSecret: clientSecret,
+		ClientSecret: secretHash,
 		Name:         req.Name,
 		RedirectURIs: models.StringArray(req.RedirectURIs),
 		GrantTypes:   models.StringArray(req.GrantTypes),
@@ -62,6 +74,8 @@ func (s *clientServiceImpl) Create(ctx context.Context, tenantID uuid.UUID, req 
 		s.logger.WithError(err).Error("failed to create client")
 		return nil, fmt.Errorf("failed to create client: %w", err)
 	}
+
+	client.PlainClientSecret = plainSecret
 
 	s.logger.WithFields(logrus.Fields{
 		"tenant_id": tenantID,
@@ -117,11 +131,20 @@ func (s *clientServiceImpl) Update(ctx context.Context, tenantID, clientID uuid.
 	if len(req.Scopes) > 0 {
 		client.Scopes = models.StringArray(req.Scopes)
 	}
+	var plainSecret string
 	if req.IsPublic != nil {
 		client.IsPublic = *req.IsPublic
 		// If changing to confidential client, generate secret
 		if !*req.IsPublic && client.ClientSecret == "" {
-			client.ClientSecret = generateClientSecret()
+			var err error
+			plainSecret, err = generateClientSecret()
+			if err != nil {
+				return nil, fmt.Errorf("failed to generate client secret: %w", err)
+			}
+			client.ClientSecret, err = hashClientSecret(plainSecret)
+			if err != nil {
+				return nil, fmt.Errorf("failed to hash client secret: %w", err)
+			}
 		}
 		// If changing to public client, clear secret
 		if *req.IsPublic {
@@ -140,6 +163,7 @@ func (s *clientServiceImpl) Update(ctx context.Context, tenantID, clientID uuid.
 		"name":      client.Name,
 	}).Info("client updated successfully")
 
+	client.PlainClientSecret = plainSecret
 	return client, nil
 }
 
@@ -200,8 +224,9 @@ func (s *clientServiceImpl) ValidateClient(ctx context.Context, tenantID uuid.UU
 		return client, nil
 	}
 
-	// For confidential clients, validate secret
-	if client.ClientSecret != clientSecret {
+	// For confidential clients, validate secret against the stored bcrypt hash
+	if clientSecret == "" || client.ClientSecret == "" ||
+		bcrypt.CompareHashAndPassword([]byte(client.ClientSecret), []byte(clientSecret)) != nil {
 		s.logger.WithFields(logrus.Fields{
 			"tenant_id": tenantID,
 			"client_id": clientID,
@@ -236,7 +261,19 @@ func generateClientID() string {
 	return "client_" + uuid.New().String()[:16]
 }
 
-func generateClientSecret() string {
-	// Generate a secure client secret
-	return "secret_" + uuid.New().String() + uuid.New().String()[:16]
+// generateClientSecret returns a 256-bit random secret (base64url-encoded)
+func generateClientSecret() (string, error) {
+	bytes := make([]byte, 32)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+	return "secret_" + base64.RawURLEncoding.EncodeToString(bytes), nil
+}
+
+func hashClientSecret(secret string) (string, error) {
+	hash, err := bcrypt.GenerateFromPassword([]byte(secret), bcrypt.DefaultCost)
+	if err != nil {
+		return "", err
+	}
+	return string(hash), nil
 }

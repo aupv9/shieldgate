@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 
+	"shieldgate/config"
 	"shieldgate/internal/middleware"
 	"shieldgate/internal/models"
 	"shieldgate/internal/services"
@@ -17,6 +18,7 @@ import (
 
 // OAuthHandler handles OAuth 2.0 authorization flows
 type OAuthHandler struct {
+	cfg           *config.Config
 	tenantService services.TenantService
 	userService   services.UserService
 	clientService services.ClientService
@@ -26,6 +28,7 @@ type OAuthHandler struct {
 
 // NewOAuthHandler creates a new OAuth handler
 func NewOAuthHandler(
+	cfg *config.Config,
 	tenantService services.TenantService,
 	userService services.UserService,
 	clientService services.ClientService,
@@ -33,6 +36,7 @@ func NewOAuthHandler(
 	logger *logrus.Logger,
 ) *OAuthHandler {
 	return &OAuthHandler{
+		cfg:           cfg,
 		tenantService: tenantService,
 		userService:   userService,
 		clientService: clientService,
@@ -109,6 +113,18 @@ func (h *OAuthHandler) HandleAuthorize(c *gin.Context) {
 		return
 	}
 
+	// The client must be registered for the authorization code grant
+	if !client.HasGrantType("authorization_code") {
+		h.renderError(c, "unauthorized_client", "Client is not authorized for the authorization_code grant", req.RedirectURI)
+		return
+	}
+
+	// Requested scopes must be within the client's registered scopes
+	if _, err := services.ValidateScopeForClient(client, req.Scope); err != nil {
+		h.renderError(c, "invalid_scope", "Requested scope is not allowed for this client", req.RedirectURI)
+		return
+	}
+
 	// Validate PKCE for public clients
 	if client.IsPublic {
 		if req.CodeChallenge == "" || req.CodeChallengeMethod == "" {
@@ -149,6 +165,14 @@ func (h *OAuthHandler) HandleLogin(c *gin.Context) {
 	state := c.PostForm("state")
 	codeChallenge := c.PostForm("code_challenge")
 	codeChallengeMethod := c.PostForm("code_challenge_method")
+
+	// CSRF protection: the hidden form token must match the signed cookie
+	cookieToken, _ := c.Cookie(csrfCookieName)
+	if !validateCSRFToken(h.cfg.JWTSecret, c.PostForm("csrf_token"), cookieToken) {
+		h.logger.WithField("tenant_id", tenantID).Warn("CSRF validation failed on login endpoint")
+		h.renderError(c, "invalid_request", "Invalid or missing CSRF token — please retry the authorization flow", "")
+		return
+	}
 
 	// Validate credentials
 	user, err := h.authenticateUser(c.Request.Context(), tenantID, username, password)
@@ -191,6 +215,18 @@ func (h *OAuthHandler) HandleLogin(c *gin.Context) {
 		h.renderError(c, "invalid_request", "Invalid redirect URI", "")
 		return
 	}
+
+	// Re-validate grant type and scope — form values are client-controlled
+	if !client.HasGrantType("authorization_code") {
+		h.renderError(c, "unauthorized_client", "Client is not authorized for the authorization_code grant", redirectURI)
+		return
+	}
+	grantedScope, err := services.ValidateScopeForClient(client, scope)
+	if err != nil {
+		h.renderError(c, "invalid_scope", "Requested scope is not allowed for this client", redirectURI)
+		return
+	}
+	scope = grantedScope
 
 	// Generate authorization code
 	authCode, err := h.authService.GenerateAuthorizationCode(
@@ -266,18 +302,20 @@ func (h *OAuthHandler) HandleToken(c *gin.Context) {
 // handleAuthorizationCodeGrant handles authorization code grant
 func (h *OAuthHandler) handleAuthorizationCodeGrant(c *gin.Context, tenantID uuid.UUID) {
 	code := c.PostForm("code")
-	clientID := c.PostForm("client_id")
-	clientSecret := c.PostForm("client_secret")
 	redirectURI := c.PostForm("redirect_uri")
 	codeVerifier := c.PostForm("code_verifier")
 
-	// Validate client
-	_, err := h.clientService.ValidateClient(c.Request.Context(), tenantID, clientID, clientSecret)
-	if err != nil {
-		h.logger.WithError(err).Error("client validation failed")
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"error":             "invalid_client",
-			"error_description": "Client authentication failed",
+	// Authenticate client (client_secret_basic or client_secret_post)
+	client, ok := h.authenticateClient(c, tenantID)
+	if !ok {
+		return
+	}
+	clientID := client.ClientID
+
+	if !client.HasGrantType("authorization_code") {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":             "unauthorized_client",
+			"error_description": "Client is not authorized for the authorization_code grant",
 		})
 		return
 	}
@@ -288,7 +326,7 @@ func (h *OAuthHandler) handleAuthorizationCodeGrant(c *gin.Context, tenantID uui
 		tenantID,
 		code,
 		clientID,
-		clientSecret,
+		"", // client already authenticated above
 		redirectURI,
 		codeVerifier,
 	)
@@ -319,22 +357,32 @@ func (h *OAuthHandler) handleAuthorizationCodeGrant(c *gin.Context, tenantID uui
 // handleRefreshTokenGrant handles refresh token grant
 func (h *OAuthHandler) handleRefreshTokenGrant(c *gin.Context, tenantID uuid.UUID) {
 	refreshToken := c.PostForm("refresh_token")
-	clientID := c.PostForm("client_id")
-	clientSecret := c.PostForm("client_secret")
+	requestedScope := c.PostForm("scope")
 
-	// Validate client
-	_, err := h.clientService.ValidateClient(c.Request.Context(), tenantID, clientID, clientSecret)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"error":             "invalid_client",
-			"error_description": "Client authentication failed",
+	// Authenticate client (client_secret_basic or client_secret_post)
+	client, ok := h.authenticateClient(c, tenantID)
+	if !ok {
+		return
+	}
+
+	if !client.HasGrantType("refresh_token") {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":             "unauthorized_client",
+			"error_description": "Client is not authorized for the refresh_token grant",
 		})
 		return
 	}
 
-	// Refresh tokens
-	tokenResponse, err := h.authService.RefreshTokens(c.Request.Context(), tenantID, refreshToken, clientID, clientSecret)
+	// Refresh tokens (rotation with reuse detection; scope may only narrow)
+	tokenResponse, err := h.authService.RefreshTokens(c.Request.Context(), tenantID, refreshToken, client.ClientID, requestedScope)
 	if err != nil {
+		if err == models.ErrInvalidScope {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":             "invalid_scope",
+				"error_description": "Requested scope exceeds the originally granted scope",
+			})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":             "invalid_grant",
 			"error_description": "Refresh token is invalid or expired",
@@ -347,22 +395,44 @@ func (h *OAuthHandler) handleRefreshTokenGrant(c *gin.Context, tenantID uuid.UUI
 
 // handleClientCredentialsGrant handles client credentials grant
 func (h *OAuthHandler) handleClientCredentialsGrant(c *gin.Context, tenantID uuid.UUID) {
-	clientID := c.PostForm("client_id")
-	clientSecret := c.PostForm("client_secret")
 	scope := c.PostForm("scope")
 
-	// Validate client
-	client, err := h.clientService.ValidateClient(c.Request.Context(), tenantID, clientID, clientSecret)
-	if err != nil {
+	// Authenticate client (client_secret_basic or client_secret_post)
+	client, ok := h.authenticateClient(c, tenantID)
+	if !ok {
+		return
+	}
+
+	// Public clients cannot use the client credentials grant — there is
+	// nothing to authenticate them with (RFC 6749 §4.4)
+	if client.IsPublic {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"error":             "invalid_client",
-			"error_description": "Client authentication failed",
+			"error_description": "Public clients cannot use the client_credentials grant",
 		})
 		return
 	}
 
-	// Generate client credentials token
-	tokenResponse, err := h.authService.GenerateTokens(c.Request.Context(), tenantID, client.ID, uuid.Nil, scope, false)
+	if !client.HasGrantType("client_credentials") {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":             "unauthorized_client",
+			"error_description": "Client is not authorized for the client_credentials grant",
+		})
+		return
+	}
+
+	// Requested scopes must be within the client's registered scopes
+	grantedScope, err := services.ValidateScopeForClient(client, scope)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":             "invalid_scope",
+			"error_description": "Requested scope is not allowed for this client",
+		})
+		return
+	}
+
+	// Generate client credentials token (no refresh token per RFC 6749 §4.4.3)
+	tokenResponse, err := h.authService.GenerateClientCredentialsTokens(c.Request.Context(), tenantID, client, grantedScope)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error":             "server_error",
@@ -372,6 +442,34 @@ func (h *OAuthHandler) handleClientCredentialsGrant(c *gin.Context, tenantID uui
 	}
 
 	c.JSON(http.StatusOK, tokenResponse)
+}
+
+// authenticateClient extracts and validates client credentials from the
+// request (Basic header or form body). On failure it writes the RFC-compliant
+// 401 response and returns ok=false.
+func (h *OAuthHandler) authenticateClient(c *gin.Context, tenantID uuid.UUID) (*models.Client, bool) {
+	clientID, clientSecret, ok := clientCredentialsFromRequest(c)
+	if !ok {
+		c.Header("WWW-Authenticate", `Basic realm="oauth"`)
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error":             "invalid_client",
+			"error_description": "Client authentication required",
+		})
+		return nil, false
+	}
+
+	client, err := h.clientService.ValidateClient(c.Request.Context(), tenantID, clientID, clientSecret)
+	if err != nil {
+		h.logger.WithError(err).WithField("client_id", clientID).Warn("client authentication failed")
+		c.Header("WWW-Authenticate", `Basic realm="oauth"`)
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error":             "invalid_client",
+			"error_description": "Client authentication failed",
+		})
+		return nil, false
+	}
+
+	return client, true
 }
 
 // HandleUserInfo handles OpenID Connect UserInfo requests
@@ -432,13 +530,28 @@ func (h *OAuthHandler) HandleJWKS(c *gin.Context) {
 	})
 }
 
-// HandleIntrospect handles token introspection
+// HandleIntrospect handles token introspection (RFC 7662).
+// The caller must authenticate as a confidential client (§2.1).
 func (h *OAuthHandler) HandleIntrospect(c *gin.Context) {
 	tenantID, err := middleware.GetTenantID(c)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":             "invalid_request",
 			"error_description": "Tenant context required — provide X-Tenant-ID header",
+		})
+		return
+	}
+
+	client, ok := h.authenticateClient(c, tenantID)
+	if !ok {
+		return
+	}
+	// Introspection requires real authentication; a public client has no
+	// credentials, so its "authentication" proves nothing
+	if client.IsPublic {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error":             "invalid_client",
+			"error_description": "Introspection requires a confidential client",
 		})
 		return
 	}
@@ -458,11 +571,17 @@ func (h *OAuthHandler) HandleIntrospect(c *gin.Context) {
 	c.JSON(http.StatusOK, introspection)
 }
 
-// HandleRevoke handles token revocation
+// HandleRevoke handles token revocation (RFC 7009).
+// The caller must authenticate; only its own tokens are revoked.
 func (h *OAuthHandler) HandleRevoke(c *gin.Context) {
 	tenantID, err := middleware.GetTenantID(c)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_client"})
+		return
+	}
+
+	client, ok := h.authenticateClient(c, tenantID)
+	if !ok {
 		return
 	}
 
@@ -474,7 +593,7 @@ func (h *OAuthHandler) HandleRevoke(c *gin.Context) {
 		return
 	}
 
-	err = h.authService.RevokeToken(c.Request.Context(), tenantID, token, tokenTypeHint)
+	err = h.authService.RevokeToken(c.Request.Context(), tenantID, token, tokenTypeHint, client.ID)
 	if err != nil {
 		h.logger.WithError(err).Error("token revocation failed")
 	}
@@ -490,15 +609,33 @@ func (h *OAuthHandler) authenticateUser(ctx context.Context, tenantID uuid.UUID,
 }
 
 func (h *OAuthHandler) renderLoginPage(c *gin.Context, req *models.AuthorizeRequest, client *models.Client, tenant *models.Tenant, errorMsg ...string) {
+	// Issue a CSRF token: signed value in a hidden form field, mirrored in an
+	// HttpOnly cookie (double-submit) — validated by HandleLogin
+	csrfToken, err := newCSRFToken(h.cfg.JWTSecret)
+	if err != nil {
+		h.logger.WithError(err).Error("failed to generate CSRF token")
+		h.renderError(c, "server_error", "Internal server error", "")
+		return
+	}
+	secureCookie := strings.HasPrefix(h.cfg.ServerURL, "https://")
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie(csrfCookieName, csrfToken, 600, "/oauth", "", secureCookie, true)
+
+	clientName := ""
+	if client != nil {
+		clientName = client.Name
+	}
+
 	data := gin.H{
 		"client_id":             req.ClientID,
-		"client_name":           client.Name,
+		"client_name":           clientName,
 		"redirect_uri":          req.RedirectURI,
 		"scope":                 req.Scope,
 		"state":                 req.State,
 		"code_challenge":        req.CodeChallenge,
 		"code_challenge_method": req.CodeChallengeMethod,
 		"response_type":         "code",
+		"csrf_token":            csrfToken,
 	}
 
 	if tenant != nil {

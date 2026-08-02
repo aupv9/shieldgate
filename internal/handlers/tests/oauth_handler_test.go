@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -18,6 +19,7 @@ import (
 
 	"shieldgate/internal/handlers"
 	"shieldgate/internal/models"
+	"shieldgate/tests/utils"
 )
 
 // Mock services for testing
@@ -185,13 +187,21 @@ func (m *MockAuthService) GenerateTokens(ctx context.Context, tenantID, clientID
 	return args.Get(0).(*models.TokenResponse), args.Error(1)
 }
 
-func (m *MockAuthService) RefreshTokens(ctx context.Context, tenantID uuid.UUID, refreshToken, clientID, clientSecret string) (*models.TokenResponse, error) {
-	args := m.Called(ctx, tenantID, refreshToken, clientID, clientSecret)
+func (m *MockAuthService) GenerateClientCredentialsTokens(ctx context.Context, tenantID uuid.UUID, client *models.Client, scope string) (*models.TokenResponse, error) {
+	args := m.Called(ctx, tenantID, client, scope)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
 	return args.Get(0).(*models.TokenResponse), args.Error(1)
 }
 
-func (m *MockAuthService) RevokeToken(ctx context.Context, tenantID uuid.UUID, token, tokenTypeHint string) error {
-	args := m.Called(ctx, tenantID, token, tokenTypeHint)
+func (m *MockAuthService) RefreshTokens(ctx context.Context, tenantID uuid.UUID, refreshToken, clientID, requestedScope string) (*models.TokenResponse, error) {
+	args := m.Called(ctx, tenantID, refreshToken, clientID, requestedScope)
+	return args.Get(0).(*models.TokenResponse), args.Error(1)
+}
+
+func (m *MockAuthService) RevokeToken(ctx context.Context, tenantID uuid.UUID, token, tokenTypeHint string, requestingClientID uuid.UUID) error {
+	args := m.Called(ctx, tenantID, token, tokenTypeHint, requestingClientID)
 	return args.Error(0)
 }
 
@@ -243,6 +253,7 @@ func TestOAuthHandler_HandleAuthorize_Success(t *testing.T) {
 	logger.SetLevel(logrus.ErrorLevel) // Reduce noise in tests
 
 	handler := handlers.NewOAuthHandler(
+		utils.CreateTestConfig(),
 		mockTenantService,
 		mockUserService,
 		mockClientService,
@@ -261,6 +272,8 @@ func TestOAuthHandler_HandleAuthorize_Success(t *testing.T) {
 		ClientID:     clientID,
 		Name:         "Test Client",
 		RedirectURIs: models.StringArray{redirectURI},
+		GrantTypes:   models.StringArray{"authorization_code"},
+		Scopes:       models.StringArray{"read", "write"},
 		IsPublic:     true,
 	}
 
@@ -318,6 +331,7 @@ func TestOAuthHandler_HandleLogin_Success(t *testing.T) {
 	logger.SetLevel(logrus.ErrorLevel)
 
 	handler := handlers.NewOAuthHandler(
+		utils.CreateTestConfig(),
 		mockTenantService,
 		mockUserService,
 		mockClientService,
@@ -347,20 +361,32 @@ func TestOAuthHandler_HandleLogin_Success(t *testing.T) {
 		UserID:   userID,
 	}
 
-	// Setup mocks
-	mockUserService.On("Authenticate", mock.Anything, tenantID, "test@example.com", "password123").Return(user, nil)
-	mockClientService.On("GetByClientID", mock.Anything, tenantID, clientID).Return(&models.Client{
+	client := &models.Client{
 		ID:           clientUUID,
 		TenantID:     tenantID,
 		ClientID:     clientID,
 		Name:         "Test Client",
 		RedirectURIs: models.StringArray{redirectURI},
-	}, nil)
+		GrantTypes:   models.StringArray{"authorization_code"},
+		Scopes:       models.StringArray{"read", "write"},
+		IsPublic:     true,
+	}
+
+	tenant := &models.Tenant{ID: tenantID, Name: "Test Tenant"}
+
+	// Setup mocks
+	mockUserService.On("Authenticate", mock.Anything, tenantID, "test@example.com", "password123").Return(user, nil)
+	mockClientService.On("GetByClientID", mock.Anything, tenantID, clientID).Return(client, nil)
 	mockClientService.On("ValidateRedirectURI", mock.Anything, mock.AnythingOfType("*models.Client"), redirectURI).Return(nil)
+	mockTenantService.On("GetByID", mock.Anything, tenantID).Return(tenant, nil)
 	mockAuthService.On("GenerateAuthorizationCode", mock.Anything, tenantID, clientUUID, userID, redirectURI, "read", "test-challenge", "S256").Return(authCode, nil)
 
-	// Setup router
+	// Setup router (templates needed for the authorize step that issues the CSRF token)
 	router := gin.New()
+	router.SetFuncMap(template.FuncMap{
+		"contains": func(s, substr string) bool { return strings.Contains(s, substr) },
+	})
+	router.LoadHTMLGlob("../../../templates/*")
 
 	// Add tenant context middleware for testing
 	router.Use(func(c *gin.Context) {
@@ -370,7 +396,18 @@ func TestOAuthHandler_HandleLogin_Success(t *testing.T) {
 
 	handler.RegisterRoutes(router.Group(""))
 
-	// Create form data
+	// Step 1: GET /oauth/authorize to obtain the CSRF cookie + hidden form token
+	authorizeReq := httptest.NewRequest("GET", "/oauth/authorize?response_type=code&client_id="+clientID+"&redirect_uri="+url.QueryEscape(redirectURI)+"&scope=read&state=xyz&code_challenge=test-challenge&code_challenge_method=S256", nil)
+	authorizeResp := httptest.NewRecorder()
+	router.ServeHTTP(authorizeResp, authorizeReq)
+	assert.Equal(t, http.StatusOK, authorizeResp.Code)
+
+	csrfToken := extractCSRFToken(t, authorizeResp.Body.String())
+	csrfCookie := extractCookie(authorizeResp, "sg_csrf")
+	assert.NotEmpty(t, csrfToken)
+	assert.NotNil(t, csrfCookie)
+
+	// Step 2: POST /oauth/login with the CSRF token and cookie
 	formData := url.Values{}
 	formData.Set("username", "test@example.com")
 	formData.Set("password", "password123")
@@ -380,10 +417,11 @@ func TestOAuthHandler_HandleLogin_Success(t *testing.T) {
 	formData.Set("state", "xyz")
 	formData.Set("code_challenge", "test-challenge")
 	formData.Set("code_challenge_method", "S256")
+	formData.Set("csrf_token", csrfToken)
 
-	// Create request
 	req := httptest.NewRequest("POST", "/oauth/login", strings.NewReader(formData.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(csrfCookie)
 	w := httptest.NewRecorder()
 
 	// Execute
@@ -401,6 +439,77 @@ func TestOAuthHandler_HandleLogin_Success(t *testing.T) {
 	mockAuthService.AssertExpectations(t)
 }
 
+func TestOAuthHandler_HandleLogin_MissingCSRFToken_Rejected(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	mockTenantService := new(MockTenantService)
+	mockUserService := new(MockUserService)
+	mockClientService := new(MockClientService)
+	mockAuthService := new(MockAuthService)
+
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+
+	handler := handlers.NewOAuthHandler(
+		utils.CreateTestConfig(),
+		mockTenantService,
+		mockUserService,
+		mockClientService,
+		mockAuthService,
+		logger,
+	)
+
+	tenantID := uuid.New()
+
+	router := gin.New()
+	router.SetFuncMap(template.FuncMap{
+		"contains": func(s, substr string) bool { return strings.Contains(s, substr) },
+	})
+	router.LoadHTMLGlob("../../../templates/*")
+	router.Use(func(c *gin.Context) {
+		c.Set("tenant_id", tenantID)
+		c.Next()
+	})
+	handler.RegisterRoutes(router.Group(""))
+
+	formData := url.Values{}
+	formData.Set("username", "test@example.com")
+	formData.Set("password", "password123")
+	formData.Set("client_id", "test-client-id")
+	formData.Set("redirect_uri", "http://localhost:3000/callback")
+
+	req := httptest.NewRequest("POST", "/oauth/login", strings.NewReader(formData.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	// Without a CSRF token no credentials are checked and no code is issued
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	mockUserService.AssertNotCalled(t, "Authenticate", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+	mockAuthService.AssertNotCalled(t, "GenerateAuthorizationCode", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}
+
+// extractCSRFToken pulls the hidden csrf_token field out of the rendered login page
+func extractCSRFToken(t *testing.T, body string) string {
+	re := regexp.MustCompile(`name="csrf_token" value="([^"]+)"`)
+	matches := re.FindStringSubmatch(body)
+	if len(matches) != 2 {
+		t.Fatal("csrf_token not found in login page")
+	}
+	return matches[1]
+}
+
+// extractCookie finds a named cookie in a recorded response
+func extractCookie(w *httptest.ResponseRecorder, name string) *http.Cookie {
+	for _, cookie := range w.Result().Cookies() {
+		if cookie.Name == name {
+			return cookie
+		}
+	}
+	return nil
+}
+
 func TestOAuthHandler_HandleToken_AuthorizationCodeGrant_Success(t *testing.T) {
 	// Setup
 	gin.SetMode(gin.TestMode)
@@ -414,6 +523,7 @@ func TestOAuthHandler_HandleToken_AuthorizationCodeGrant_Success(t *testing.T) {
 	logger.SetLevel(logrus.ErrorLevel)
 
 	handler := handlers.NewOAuthHandler(
+		utils.CreateTestConfig(),
 		mockTenantService,
 		mockUserService,
 		mockClientService,
@@ -427,11 +537,12 @@ func TestOAuthHandler_HandleToken_AuthorizationCodeGrant_Success(t *testing.T) {
 	clientSecret := "test-client-secret"
 
 	client := &models.Client{
-		ID:           uuid.New(),
-		TenantID:     tenantID,
-		ClientID:     clientID,
-		ClientSecret: clientSecret,
-		IsPublic:     false,
+		ID:         uuid.New(),
+		TenantID:   tenantID,
+		ClientID:   clientID,
+		GrantTypes: models.StringArray{"authorization_code"},
+		Scopes:     models.StringArray{"read"},
+		IsPublic:   false,
 	}
 
 	tokenResponse := &models.TokenResponse{
@@ -444,7 +555,7 @@ func TestOAuthHandler_HandleToken_AuthorizationCodeGrant_Success(t *testing.T) {
 
 	// Setup mocks
 	mockClientService.On("ValidateClient", mock.Anything, tenantID, clientID, clientSecret).Return(client, nil)
-	mockAuthService.On("ExchangeAuthorizationCode", mock.Anything, tenantID, "test-code", clientID, clientSecret, "http://localhost:3000/callback", "test-verifier").Return(tokenResponse, nil)
+	mockAuthService.On("ExchangeAuthorizationCode", mock.Anything, tenantID, "test-code", clientID, "", "http://localhost:3000/callback", "test-verifier").Return(tokenResponse, nil)
 
 	// Setup router
 	router := gin.New()

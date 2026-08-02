@@ -42,6 +42,24 @@ func (r *refreshTokenRepository) GetByToken(ctx context.Context, tenantID uuid.U
 	return &refreshToken, nil
 }
 
+func (r *refreshTokenRepository) Revoke(ctx context.Context, tenantID uuid.UUID, token string) error {
+	if err := r.db.WithContext(ctx).
+		Model(&models.RefreshToken{}).
+		Where("tenant_id = ? AND token = ? AND revoked_at IS NULL", tenantID, token).
+		Update("revoked_at", time.Now()).Error; err != nil {
+		return fmt.Errorf("failed to revoke refresh token: %w", err)
+	}
+	return nil
+}
+
+func (r *refreshTokenRepository) DeleteByFamilyID(ctx context.Context, tenantID, familyID uuid.UUID) error {
+	if err := r.db.WithContext(ctx).
+		Delete(&models.RefreshToken{}, "tenant_id = ? AND family_id = ?", tenantID, familyID).Error; err != nil {
+		return fmt.Errorf("failed to delete refresh tokens by family ID: %w", err)
+	}
+	return nil
+}
+
 func (r *refreshTokenRepository) Delete(ctx context.Context, tenantID uuid.UUID, token string) error {
 	if err := r.db.WithContext(ctx).
 		Delete(&models.RefreshToken{}, "tenant_id = ? AND token = ?", tenantID, token).Error; err != nil {
