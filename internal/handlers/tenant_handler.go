@@ -68,8 +68,7 @@ func (h *TenantHandler) CreateTenant(c *gin.Context) {
 		return
 	}
 
-	// TODO: Check idempotency key
-	// idempotencyKey := c.GetHeader("Idempotency-Key")
+	// Idempotency-Key handling is provided by middleware.Idempotency on the /v1 group
 
 	tenant, err := h.tenantService.Create(c.Request.Context(), &req)
 	if err != nil {

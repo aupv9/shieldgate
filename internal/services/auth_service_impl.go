@@ -508,6 +508,7 @@ func (s *authServiceImpl) GetDiscoveryDocument(ctx context.Context) (*models.Ope
 		RevocationEndpoint:          s.config.ServerURL + "/oauth/revoke",
 		IntrospectionEndpoint:       s.config.ServerURL + "/oauth/introspect",
 		EndSessionEndpoint:          s.config.ServerURL + "/oauth/logout",
+		RegistrationEndpoint:        s.config.ServerURL + "/oauth/register",
 		ResponseTypesSupported:      []string{"code"},
 		GrantTypesSupported: []string{
 			"authorization_code",

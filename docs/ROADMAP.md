@@ -61,28 +61,26 @@
 
 Bổ sung ngoài kế hoạch: PKCE compare dùng constant-time; `email_verified` trong UserInfo lấy từ user record thay vì hardcode; fix panic khi render login page với client nil.
 
-### Phase 2 — OIDC Compliance (~2 tuần)
-> Mục tiêu: pass được OIDC conformance test cơ bản (basic certification profile).
+### Phase 2 — OIDC Compliance ✅ HOÀN THÀNH (2026-08-02)
 
-| Task | Gaps | Việc cụ thể |
-|------|------|-------------|
-| 2.1 Ký bất đối xứng RS256/ES256 | G4 | Key pair per-server (config/KMS), header `kid`; giữ HS256 làm fallback config được. |
-| 2.2 JWKS thật + key rotation | G4, G20 | Publish public key qua `/.well-known/jwks.json`; hỗ trợ ≥2 key đồng thời (current + next) để rotate không downtime. |
-| 2.3 Nonce end-to-end | G5 | Thêm cột `nonce` vào `authorization_codes`; đưa vào ID token claims. |
-| 2.4 ID token đầy đủ claims | G16 | `auth_time`, `at_hash`, expiry theo config; audience validation. |
-| 2.5 UserInfo theo scope | G17 | Trả claims tương ứng scope `profile`/`email`; `email_verified` lấy từ user record. |
-| 2.6 Discovery document đầy đủ | G15 | Bổ sung tất cả metadata bắt buộc/khuyến nghị theo OIDC Discovery 1.0. |
+| Task | Gaps | Trạng thái |
+|------|------|-----------|
+| 2.1 Ký bất đối xứng RS256 | G4 | ✅ RSA-2048 tự bootstrap vào bảng `signing_keys`, header `kid`; HS256 giữ làm verify-fallback cho token cũ |
+| 2.2 JWKS thật + key rotation | G4, G20 | ✅ `/.well-known/jwks.json` publish public key của mọi key đang phục vụ; `RotateSigningKey` — key cũ vẫn verify (zero-downtime) |
+| 2.3 Nonce end-to-end | G5 | ✅ authorize → login form → cột `nonce` trong auth code → claim trong ID token |
+| 2.4 ID token đầy đủ claims | G16 | ✅ `auth_time` (thời điểm login thật), `at_hash` (bind access token), expiry theo `ID_TOKEN_DURATION` |
+| 2.5 UserInfo theo scope | G17 | ✅ Claims trả theo scope profile/email (given_name, family_name, preferred_username, locale, zoneinfo…) |
+| 2.6 Discovery đầy đủ | G15 | ✅ revocation/introspection/end_session/registration endpoints, token_endpoint_auth_methods, code_challenge_methods |
 
-### Phase 3 — Session, Consent & SSO (~2 tuần)
-> Mục tiêu: trải nghiệm authorization server thật sự (đăng nhập 1 lần, consent, logout).
+### Phase 3 — Session, Consent & SSO ✅ HOÀN THÀNH (2026-08-02)
 
-| Task | Gaps | Việc cụ thể |
-|------|------|-------------|
-| 3.1 Server-side session | G13 | Session store (Redis), cookie `HttpOnly+Secure+SameSite`; /authorize check session → skip login. |
-| 3.2 `prompt` & `max_age` | G13 | Hỗ trợ `prompt=none/login/consent`, `max_age`, trả `login_required`/`consent_required` đúng chuẩn. |
-| 3.3 Consent screen | G14 | Trang consent hiển thị scope; lưu granted consent per (user, client, scope); skip nếu đã grant. |
-| 3.4 Logout | G13 | `end_session_endpoint` (RP-initiated logout), revoke session + `post_logout_redirect_uri` validation. |
-| 3.5 Tenant resolution theo domain | G18 | Resolve tenant từ `Host` header / path prefix cho browser flows; giữ `X-Tenant-ID` cho API M2M. |
+| Task | Gaps | Trạng thái |
+|------|------|-----------|
+| 3.1 Server-side session | G13 | ✅ Bảng `user_sessions` (token hash SHA-256), cookie HttpOnly+SameSite=Lax; /authorize có session → bỏ qua login |
+| 3.2 `prompt` & `max_age` | G13 | ✅ `prompt=login/consent/none` với `login_required`/`consent_required`; `max_age` ép re-login khi authentication cũ |
+| 3.3 Consent screen | G14 | ✅ Trang consent liệt kê scope; grant lưu per (user, client) trong `user_consents`, cộng dồn — đã grant thì skip |
+| 3.4 Logout | G13 | ✅ `/oauth/logout` (end_session_endpoint): revoke session, clear cookie, `post_logout_redirect_uri` chỉ theo URI đã đăng ký |
+| 3.5 Tenant theo domain | G18 | ✅ `TenantContext` nhận resolver Host→tenant (wired `GetByDomain`); browser flow không cần X-Tenant-ID |
 
 ### Bổ sung — Grant types mở rộng ✅ HOÀN THÀNH (2026-08-02)
 
@@ -92,16 +90,18 @@ Bổ sung ngoài kế hoạch: PKCE compare dùng constant-time; `email_verified
 | Token Exchange (RFC 8693) | ✅ `grant_type=token-exchange` trên token endpoint; chỉ confidential client; subject_token phải là access token còn sống; scope = subset của cả subject token lẫn client registration; token mới giữ nguyên `sub`, ghi delegation qua claim `act` |
 | Discovery mở rộng | ✅ `device_authorization_endpoint` + `grant_types_supported` trong OIDC discovery |
 
-### Phase 4 — Nâng cao & Production Ops (~2–3 tuần, chọn lọc theo nhu cầu)
+### Phase 4 — Nâng cao & Production Ops ✅ HOÀN THÀNH PHẦN LỚN (2026-08-02)
 
-| Task | Việc cụ thể |
-|------|-------------|
-| 4.1 MFA (TOTP) | Enroll/verify TOTP, bước 2 trong login flow, claim `amr`. |
-| 4.2 Dynamic Client Registration (RFC 7591) | `POST /oauth/register` với initial access token. |
-| 4.3 Email flows hoàn chỉnh | Verification + password reset end-to-end (G22), wiring UserService ↔ EmailService. |
-| 4.4 Idempotency key | Hoàn thành TODO ở tenant handler (G21), áp dụng cho mọi POST management API. |
-| 4.5 Observability | Prometheus metrics (`/metrics`), OpenTelemetry tracing, structured audit cho mọi token event. |
-| 4.6 Conformance & load test | Chạy OIDC conformance suite; k6/vegeta load test token endpoint. |
+| Task | Trạng thái |
+|------|-----------|
+| 4.1 MFA (TOTP) | ✅ RFC 6238 tự implement (SHA-1, 6 số, ±1 step); enroll/activate/disable qua `/v1/users/:id/mfa/*`; login flow 2 bước với signed state token 5 phút + trang `mfa.html` |
+| 4.2 Dynamic Client Registration | ✅ `POST /oauth/register` (RFC 7591) sau RequireAuth; `token_endpoint_auth_method=none` → public client; publish `registration_endpoint` |
+| 4.3 Email flows | ✅ Endpoints public `/auth/verify-email`, `/auth/request-password-reset` (không lộ account tồn tại), `/auth/reset-password`; protected `/v1/users/:id/send-verification` |
+| 4.4 Idempotency key | ✅ Middleware `Idempotency()` trên nhóm /v1: replay response đã lưu (Redis, TTL 24h) theo header `Idempotency-Key`; không cache 5xx |
+| 4.5 Observability | ✅ `/metrics` Prometheus text format (requests theo method/route/status, duration, in-flight, uptime) — không thêm dependency; Redis giờ được attach vào request context (fix rate limiting trước đây không hoạt động) |
+| 4.6 Conformance & load test | ⏳ Còn lại: chạy OIDC conformance suite + k6 load test (cần môi trường deploy) |
+
+Ghi chú còn lại cho production: mã hoá at-rest cho `mfa_secret`/`signing_keys` (KMS), OpenTelemetry tracing, back-channel logout, và endpoint quản trị cho `RotateSigningKey`.
 
 ---
 

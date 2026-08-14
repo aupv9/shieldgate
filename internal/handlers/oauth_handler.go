@@ -59,8 +59,11 @@ func (h *OAuthHandler) RegisterRoutes(router *gin.RouterGroup) {
 		oauth.GET("/device", h.HandleDeviceVerificationPage)
 		oauth.POST("/device", h.HandleDeviceVerification)
 		oauth.POST("/consent", h.HandleConsent)
+		oauth.POST("/mfa", h.HandleMFAVerify)
 		oauth.GET("/logout", h.HandleLogout)
 		oauth.POST("/logout", h.HandleLogout)
+		// Dynamic Client Registration (RFC 7591) — requires a management token
+		oauth.POST("/register", middleware.RequireAuth(h.cfg, h.authService), h.HandleRegisterClient)
 	}
 
 	// OpenID Connect endpoints
@@ -280,8 +283,27 @@ func (h *OAuthHandler) HandleLogin(c *gin.Context) {
 	}
 	scope = grantedScope
 
-	// Establish the SSO session so later authorize requests skip the login form
-	sessionToken, session, err := h.authService.CreateSession(c.Request.Context(), tenantID, user.ID, c.ClientIP(), c.Request.UserAgent())
+	// MFA: the password step alone is not enough for MFA-enabled users —
+	// hand the flow to the TOTP step with a short-lived signed state token
+	if user.MFAEnabled {
+		mfaToken, err := newMFAStateToken(h.cfg.JWTSecret, user.ID, mfaStateTokenTTL)
+		if err != nil {
+			h.logger.WithError(err).Error("failed to create MFA state token")
+			h.renderError(c, "server_error", "Internal server error", redirectURI)
+			return
+		}
+		tenant, _ := h.tenantService.GetByID(c.Request.Context(), tenantID)
+		h.renderMFAPage(c, tenant, mfaToken, clientID, redirectURI, scope, state, codeChallenge, codeChallengeMethod, nonce, "")
+		return
+	}
+
+	h.finishBrowserLogin(c, tenantID, client, user.ID, redirectURI, scope, state, codeChallenge, codeChallengeMethod, nonce)
+}
+
+// finishBrowserLogin establishes the SSO session and continues to consent or
+// straight to code issuance
+func (h *OAuthHandler) finishBrowserLogin(c *gin.Context, tenantID uuid.UUID, client *models.Client, userID uuid.UUID, redirectURI, scope, state, codeChallenge, codeChallengeMethod, nonce string) {
+	sessionToken, session, err := h.authService.CreateSession(c.Request.Context(), tenantID, userID, c.ClientIP(), c.Request.UserAgent())
 	if err != nil {
 		h.logger.WithError(err).Error("failed to create session")
 		h.renderError(c, "server_error", "Internal server error", redirectURI)
@@ -290,11 +312,11 @@ func (h *OAuthHandler) HandleLogin(c *gin.Context) {
 	h.setSessionCookie(c, sessionToken)
 
 	// Consent: show the consent screen unless every scope was granted before
-	hasConsent, err := h.authService.HasConsent(c.Request.Context(), tenantID, user.ID, client.ID, scope)
+	hasConsent, err := h.authService.HasConsent(c.Request.Context(), tenantID, userID, client.ID, scope)
 	if err != nil || !hasConsent {
 		tenant, _ := h.tenantService.GetByID(c.Request.Context(), tenantID)
 		req := &models.AuthorizeRequest{
-			ClientID:            clientID,
+			ClientID:            client.ClientID,
 			RedirectURI:         redirectURI,
 			Scope:               scope,
 			State:               state,
@@ -306,7 +328,7 @@ func (h *OAuthHandler) HandleLogin(c *gin.Context) {
 		return
 	}
 
-	h.completeAuthorization(c, tenantID, client, user.ID,
+	h.completeAuthorization(c, tenantID, client, userID,
 		redirectURI, scope, state, codeChallenge, codeChallengeMethod, nonce,
 		session.AuthTime)
 }
