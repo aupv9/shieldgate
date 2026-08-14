@@ -56,6 +56,10 @@ var (
 	// Session errors
 	ErrSessionNotFound = errors.New("session not found")
 	ErrSessionExpired  = errors.New("session expired")
+	// MFA errors
+	ErrMFANotEnrolled   = errors.New("mfa not enrolled")
+	ErrMFAAlreadyActive = errors.New("mfa already enabled")
+	ErrMFAInvalidCode   = errors.New("invalid mfa code")
 )
 
 // Error codes for API responses
@@ -200,6 +204,8 @@ type User struct {
 	LockedUntil                *time.Time     `json:"locked_until"`
 	PasswordResetToken         string         `json:"-" gorm:"size:255"`
 	PasswordResetExpiresAt     *time.Time     `json:"-"`
+	MFAEnabled                 bool           `json:"mfa_enabled" gorm:"not null;default:false"`
+	MFASecret                  string         `json:"-" gorm:"size:255"`
 	Metadata                   JSON           `json:"metadata" gorm:"type:jsonb;default:'{}'"`
 	CreatedAt                  time.Time      `json:"created_at" gorm:"autoCreateTime"`
 	UpdatedAt                  time.Time      `json:"updated_at" gorm:"autoUpdateTime"`

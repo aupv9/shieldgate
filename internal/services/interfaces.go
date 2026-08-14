@@ -49,6 +49,17 @@ type UserService interface {
 	// Login Tracking
 	RecordLoginAttempt(ctx context.Context, tenantID uuid.UUID, email, ipAddress string, success bool) error
 	GetLoginHistory(ctx context.Context, tenantID, userID uuid.UUID, limit, offset int) (*models.PaginatedResponse, error)
+
+	// MFA (TOTP, RFC 6238)
+	// EnrollMFA generates and stores a TOTP secret (not yet enforced) and
+	// returns it with the otpauth:// URI for authenticator apps
+	EnrollMFA(ctx context.Context, tenantID, userID uuid.UUID) (secret, otpauthURI string, err error)
+	// ActivateMFA verifies a code from the authenticator and turns MFA on
+	ActivateMFA(ctx context.Context, tenantID, userID uuid.UUID, code string) error
+	// DisableMFA turns MFA off after verifying a current code
+	DisableMFA(ctx context.Context, tenantID, userID uuid.UUID, code string) error
+	// VerifyMFA checks a TOTP code during login
+	VerifyMFA(ctx context.Context, tenantID, userID uuid.UUID, code string) error
 }
 
 // ClientService defines the interface for OAuth client business logic

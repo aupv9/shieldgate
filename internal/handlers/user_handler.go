@@ -35,6 +35,112 @@ func (h *UserHandler) RegisterRoutes(router *gin.RouterGroup) {
 	router.DELETE("/:user_id", h.DeleteUser)
 	router.GET("", h.ListUsers)
 	router.POST("/:user_id/change-password", h.ChangePassword)
+
+	// MFA (TOTP) management
+	router.POST("/:user_id/mfa/enroll", h.EnrollMFA)
+	router.POST("/:user_id/mfa/activate", h.ActivateMFA)
+	router.POST("/:user_id/mfa/disable", h.DisableMFA)
+}
+
+// mfaCodeRequest carries a TOTP code for activation/disable
+type mfaCodeRequest struct {
+	Code string `json:"code" binding:"required"`
+}
+
+// EnrollMFA handles POST /v1/users/:user_id/mfa/enroll
+func (h *UserHandler) EnrollMFA(c *gin.Context) {
+	tenantID, userID, ok := h.tenantAndUser(c)
+	if !ok {
+		return
+	}
+
+	secret, otpauthURI, err := h.userService.EnrollMFA(c.Request.Context(), tenantID, userID)
+	if err != nil {
+		if err == models.ErrMFAAlreadyActive {
+			middleware.RespondWithError(c, http.StatusConflict,
+				models.ErrorCodeBusinessRuleViolation, "MFA is already enabled for this user", nil)
+			return
+		}
+		h.logger.WithError(err).Error("MFA enrollment failed")
+		middleware.RespondWithError(c, http.StatusInternalServerError,
+			models.ErrorCodeInternalError, "Failed to enroll MFA", nil)
+		return
+	}
+
+	// The secret is returned exactly once, for the authenticator app
+	c.JSON(http.StatusOK, gin.H{"secret": secret, "otpauth_uri": otpauthURI})
+}
+
+// ActivateMFA handles POST /v1/users/:user_id/mfa/activate
+func (h *UserHandler) ActivateMFA(c *gin.Context) {
+	tenantID, userID, ok := h.tenantAndUser(c)
+	if !ok {
+		return
+	}
+
+	var req mfaCodeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		middleware.RespondWithError(c, http.StatusBadRequest,
+			models.ErrorCodeValidationFailed, "Invalid request body", nil)
+		return
+	}
+
+	if err := h.userService.ActivateMFA(c.Request.Context(), tenantID, userID, req.Code); err != nil {
+		status, code := http.StatusBadRequest, models.ErrorCodeValidationFailed
+		switch err {
+		case models.ErrMFAInvalidCode:
+			status, code = http.StatusUnauthorized, models.ErrorCodeUnauthorized
+		case models.ErrMFAAlreadyActive:
+			status, code = http.StatusConflict, models.ErrorCodeBusinessRuleViolation
+		}
+		middleware.RespondWithError(c, status, code, err.Error(), nil)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "MFA enabled"})
+}
+
+// DisableMFA handles POST /v1/users/:user_id/mfa/disable
+func (h *UserHandler) DisableMFA(c *gin.Context) {
+	tenantID, userID, ok := h.tenantAndUser(c)
+	if !ok {
+		return
+	}
+
+	var req mfaCodeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		middleware.RespondWithError(c, http.StatusBadRequest,
+			models.ErrorCodeValidationFailed, "Invalid request body", nil)
+		return
+	}
+
+	if err := h.userService.DisableMFA(c.Request.Context(), tenantID, userID, req.Code); err != nil {
+		status, code := http.StatusBadRequest, models.ErrorCodeValidationFailed
+		if err == models.ErrMFAInvalidCode {
+			status, code = http.StatusUnauthorized, models.ErrorCodeUnauthorized
+		}
+		middleware.RespondWithError(c, status, code, err.Error(), nil)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "MFA disabled"})
+}
+
+// tenantAndUser extracts the tenant context and the :user_id path parameter
+func (h *UserHandler) tenantAndUser(c *gin.Context) (uuid.UUID, uuid.UUID, bool) {
+	tenantID, err := middleware.GetTenantID(c)
+	if err != nil {
+		middleware.RespondWithError(c, http.StatusUnauthorized,
+			models.ErrorCodeUnauthorized, "Invalid tenant context", nil)
+		return uuid.Nil, uuid.Nil, false
+	}
+	userID, err := uuid.Parse(c.Param("user_id"))
+	if err != nil {
+		middleware.RespondWithError(c, http.StatusBadRequest,
+			models.ErrorCodeValidationFailed, "Invalid user ID", nil)
+		return uuid.Nil, uuid.Nil, false
+	}
+	return tenantID, userID, true
 }
 
 // CreateUser handles POST /v1/users

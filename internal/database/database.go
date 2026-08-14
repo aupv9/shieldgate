@@ -184,6 +184,10 @@ func Migrate(db *gorm.DB) error {
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_signing_keys_kid ON signing_keys(kid)`,
 		`CREATE INDEX IF NOT EXISTS idx_signing_keys_is_active ON signing_keys(is_active)`,
 
+		// MFA (TOTP) columns on users
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_enabled BOOLEAN NOT NULL DEFAULT false`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_secret VARCHAR(255)`,
+
 		// OIDC: nonce + auth_time on authorization codes
 		`ALTER TABLE authorization_codes ADD COLUMN IF NOT EXISTS nonce VARCHAR(255)`,
 		`ALTER TABLE authorization_codes ADD COLUMN IF NOT EXISTS auth_time TIMESTAMP WITH TIME ZONE`,

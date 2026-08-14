@@ -319,6 +319,9 @@ func isOAuthEndpoint(path string) bool {
 		"/oauth/login",
 		"/oauth/consent",
 		"/oauth/logout",
+		"/oauth/mfa",
+		"/oauth/register",
+		"/auth/", // public email verification / password reset endpoints
 		"/.well-known/openid-configuration",
 		"/.well-known/jwks.json",
 		"/userinfo",

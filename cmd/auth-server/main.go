@@ -118,7 +118,15 @@ func main() {
 	// Add middleware
 	router.Use(gin.Logger())
 	router.Use(gin.Recovery())
+	router.Use(middleware.Metrics())
 	router.Use(middleware.CORS(cfg))
+	// Attach Redis to the request context (used by rate limiting + idempotency)
+	router.Use(func(c *gin.Context) {
+		if redisClient != nil {
+			c.Set("redis", redisClient)
+		}
+		c.Next()
+	})
 	router.Use(middleware.RateLimit(cfg))
 	router.Use(middleware.TenantContext(cfg, func(ctx context.Context, host string) (uuid.UUID, error) {
 		tenant, err := tenantService.GetByDomain(ctx, host)
@@ -134,9 +142,10 @@ func main() {
 	userHandler := handlers.NewUserHandler(userService, logger)
 	clientHandler := handlers.NewClientHandler(clientService, logger)
 	oauthHandler := handlers.NewOAuthHandler(cfg, tenantService, userService, clientService, authService, logger)
+	emailAuthHandler := handlers.NewEmailAuthHandler(emailService, logger)
 
 	// Setup routes
-	setupRoutes(cfg, db, redisClient, router, tenantHandler, userHandler, clientHandler, oauthHandler, authService)
+	setupRoutes(cfg, db, redisClient, router, tenantHandler, userHandler, clientHandler, oauthHandler, emailAuthHandler, authService)
 
 	// Create HTTP server
 	server := &http.Server{
@@ -209,6 +218,7 @@ func setupRoutes(
 	userHandler *handlers.UserHandler,
 	clientHandler *handlers.ClientHandler,
 	oauthHandler *handlers.OAuthHandler,
+	emailAuthHandler *handlers.EmailAuthHandler,
 	authService services.AuthService,
 ) {
 	// Health check endpoint
@@ -252,12 +262,19 @@ func setupRoutes(
 		})
 	})
 
+	// Prometheus-style metrics
+	router.GET("/metrics", middleware.MetricsHandler())
+
 	// OAuth 2.0 and OpenID Connect endpoints (no versioning per spec)
 	oauthHandler.RegisterRoutes(router.Group(""))
+
+	// Public email verification / password reset endpoints
+	emailAuthHandler.RegisterPublicRoutes(router.Group("/auth"))
 
 	// Management API endpoints (versioned)
 	api := router.Group("/v1")
 	api.Use(middleware.RequireAuth(cfg, authService)) // Require authentication + revocation check for management APIs
+	api.Use(middleware.Idempotency())                 // Replay stored responses for repeated Idempotency-Key headers
 	{
 		// Tenant management
 		tenantHandler.RegisterRoutes(api.Group("/tenants"))
@@ -267,6 +284,9 @@ func setupRoutes(
 
 		// Client management
 		clientHandler.RegisterRoutes(api.Group("/clients"))
+
+		// Email verification management
+		emailAuthHandler.RegisterProtectedRoutes(api)
 	}
 
 	// Serve static files and templates

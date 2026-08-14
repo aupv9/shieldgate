@@ -78,3 +78,25 @@ func (m *MockUserService) GetLoginHistory(ctx context.Context, tenantID, userID 
 	}
 	return args.Get(0).(*models.PaginatedResponse), args.Error(1)
 }
+
+// --- MFA methods ---
+
+func (m *MockUserService) EnrollMFA(ctx context.Context, tenantID, userID uuid.UUID) (string, string, error) {
+	args := m.Called(ctx, tenantID, userID)
+	return args.String(0), args.String(1), args.Error(2)
+}
+
+func (m *MockUserService) ActivateMFA(ctx context.Context, tenantID, userID uuid.UUID, code string) error {
+	args := m.Called(ctx, tenantID, userID, code)
+	return args.Error(0)
+}
+
+func (m *MockUserService) DisableMFA(ctx context.Context, tenantID, userID uuid.UUID, code string) error {
+	args := m.Called(ctx, tenantID, userID, code)
+	return args.Error(0)
+}
+
+func (m *MockUserService) VerifyMFA(ctx context.Context, tenantID, userID uuid.UUID, code string) error {
+	args := m.Called(ctx, tenantID, userID, code)
+	return args.Error(0)
+}
