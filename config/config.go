@@ -3,7 +3,6 @@ package config
 import (
 	"errors"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/spf13/viper"
@@ -96,15 +95,11 @@ func Load() (*Config, error) {
 	// Read a configuration file (optional)
 	if err := viper.ReadInConfig(); err != nil {
 		var configFileNotFoundError viper.ConfigFileNotFoundError
-		if errors.As(err, &configFileNotFoundError) {
-			// Config file not found; use defaults and environment variables
-			fmt.Printf("Warning: Config file not found, using environment variables and defaults\n")
+		if !errors.As(err, &configFileNotFoundError) {
+			return nil, fmt.Errorf("error reading config file: %w", err)
 		}
+		// Config file not found — fall through to env vars and defaults
 	}
-
-	// Debug: Print environment variables
-	fmt.Printf("DEBUG: DATABASE_URL env var: %s\n", os.Getenv("DATABASE_URL"))
-	fmt.Printf("DEBUG: Config database.url: %s\n", viper.GetString("database.url"))
 
 	return &Config{
 		// Database
