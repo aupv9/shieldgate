@@ -126,10 +126,10 @@ func main() {
 	tenantHandler := handlers.NewTenantHandler(tenantService, logger)
 	userHandler := handlers.NewUserHandler(userService, logger)
 	clientHandler := handlers.NewClientHandler(clientService, logger)
-	oauthHandler := handlers.NewOAuthHandler(tenantService, userService, clientService, authService, logger)
+	oauthHandler := handlers.NewOAuthHandler(cfg, tenantService, userService, clientService, authService, logger)
 
 	// Setup routes
-	setupRoutes(cfg, db, redisClient, router, tenantHandler, userHandler, clientHandler, oauthHandler)
+	setupRoutes(cfg, db, redisClient, router, tenantHandler, userHandler, clientHandler, oauthHandler, authService)
 
 	// Create HTTP server
 	server := &http.Server{
@@ -202,6 +202,7 @@ func setupRoutes(
 	userHandler *handlers.UserHandler,
 	clientHandler *handlers.ClientHandler,
 	oauthHandler *handlers.OAuthHandler,
+	authService services.AuthService,
 ) {
 	// Health check endpoint
 	router.GET("/health", func(c *gin.Context) {
@@ -249,7 +250,7 @@ func setupRoutes(
 
 	// Management API endpoints (versioned)
 	api := router.Group("/v1")
-	api.Use(middleware.RequireAuth(cfg)) // Require authentication for management APIs
+	api.Use(middleware.RequireAuth(cfg, authService)) // Require authentication + revocation check for management APIs
 	{
 		// Tenant management
 		tenantHandler.RegisterRoutes(api.Group("/tenants"))

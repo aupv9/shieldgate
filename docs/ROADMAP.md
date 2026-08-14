@@ -43,23 +43,23 @@
 
 ## 2. Roadmap theo Phase
 
-### Phase 1 — Security Hardening lõi (ưu tiên cao nhất, ~1–2 tuần)
+### Phase 1 — Security Hardening lõi ✅ HOÀN THÀNH (2026-08-02)
 > Mục tiêu: vá các lỗ hổng khiến server không thể deploy production. Không đổi API surface.
 
-| Task | Gaps | Việc cụ thể |
-|------|------|-------------|
-| 1.1 Hash client secret | G1 | bcrypt khi tạo client, chỉ trả secret 1 lần ở response Create; verify bằng `bcrypt.CompareHashAndPassword`. Migration cho client hiện hữu. |
-| 1.2 Hash token trong DB | G2 | Lưu SHA-256(token) cho access/refresh token; lookup theo hash. |
-| 1.3 Client auth cho introspect/revoke | G3 | Bắt buộc client credentials (basic hoặc post); revoke chỉ cho token thuộc về client đó. |
-| 1.4 `client_secret_basic` | G12 | Parse `Authorization: Basic` ở token/introspect/revoke, fallback về form post. |
-| 1.5 Validate scope & grant type | G6, G19 | Chuẩn hoá scope parser (viết lại `contains()`); check requested scope ⊆ `client.Scopes`, grant_type ∈ `client.GrantTypes` ở mọi grant. |
-| 1.6 Refresh token rotation đúng | G7 | Giữ nguyên scope gốc (cho phép narrow), cấp lại ID token nếu có `openid`; thêm `family_id` + reuse detection → revoke cả family. |
-| 1.7 Auth code atomic + reuse revoke | G10 | Delete-and-return trong 1 query (`DELETE ... RETURNING`); nếu code đã dùng → revoke các token đã cấp từ code đó. |
-| 1.8 Enforce revocation | G8 | Middleware/`ValidateAccessToken` check denylist (Redis, TTL = thời gian còn lại của token) khi revoke JWT. |
-| 1.9 CSRF cho login form | G9 | CSRF token trong session/hidden field, SameSite cookie. |
-| 1.10 Sửa client_credentials | G11 | Không cấp refresh token; access token có `sub = client_id`; không ghi user_id nil. |
+| Task | Gaps | Trạng thái |
+|------|------|-----------|
+| 1.1 Hash client secret | G1 | ✅ bcrypt hash trong DB, plaintext chỉ trả 1 lần ở response Create (`PlainClientSecret`); secret 256-bit từ crypto/rand |
+| 1.2 Hash token trong DB | G2 | ✅ SHA-256(token) cho cả access & refresh token; lookup theo hash |
+| 1.3 Client auth cho introspect/revoke | G3 | ✅ Introspect yêu cầu confidential client; revoke yêu cầu client auth + chỉ revoke token thuộc client đó |
+| 1.4 `client_secret_basic` | G12 | ✅ `clientCredentialsFromRequest` hỗ trợ Basic (có URL-decode per RFC 6749 §2.3.1) + form post ở mọi endpoint |
+| 1.5 Validate scope & grant type | G6, G19 | ✅ `services/scope.go` (ParseScope/ScopeIsSubset/ValidateScopeForClient); check `client.GrantTypes` ở authorize + mọi grant; `contains()` lỗi đã xoá |
+| 1.6 Refresh token rotation đúng | G7 | ✅ Giữ scope gốc, cho phép narrow, cấp ID token nếu `openid`; `family_id` + `revoked_at` → replay = revoke cả family |
+| 1.7 Auth code atomic + reuse revoke | G10 | ✅ `Consume` = UPDATE...RETURNING atomic đánh dấu `used_at`; reuse → revoke token family (family = authCode.ID) |
+| 1.8 Enforce revocation | G8 | ✅ `ValidateAccessToken` check record còn sống trong token store; `RequireAuth` nhận validator để chặn JWT đã revoke ở management API |
+| 1.9 CSRF cho login form | G9 | ✅ Signed double-submit cookie (HMAC-SHA256, HttpOnly, SameSite=Lax) — hidden field + cookie phải khớp |
+| 1.10 Sửa client_credentials | G11 | ✅ `GenerateClientCredentialsTokens`: không refresh token, `sub = client.ID`; chặn public client dùng grant này |
 
-**Definition of Done Phase 1**: gosec + golangci-lint sạch; test coverage ≥80% cho các path sửa; integration test cho từng grant.
+Bổ sung ngoài kế hoạch: PKCE compare dùng constant-time; `email_verified` trong UserInfo lấy từ user record thay vì hardcode; fix panic khi render login page với client nil.
 
 ### Phase 2 — OIDC Compliance (~2 tuần)
 > Mục tiêu: pass được OIDC conformance test cơ bản (basic certification profile).
@@ -83,6 +83,14 @@
 | 3.3 Consent screen | G14 | Trang consent hiển thị scope; lưu granted consent per (user, client, scope); skip nếu đã grant. |
 | 3.4 Logout | G13 | `end_session_endpoint` (RP-initiated logout), revoke session + `post_logout_redirect_uri` validation. |
 | 3.5 Tenant resolution theo domain | G18 | Resolve tenant từ `Host` header / path prefix cho browser flows; giữ `X-Tenant-ID` cho API M2M. |
+
+### Bổ sung — Grant types mở rộng ✅ HOÀN THÀNH (2026-08-02)
+
+| Task | Trạng thái |
+|------|-----------|
+| Device Authorization Grant (RFC 8628) | ✅ `POST /oauth/device_authorization` (client auth + scope/grant validation), trang xác thực `GET/POST /oauth/device` (CSRF, approve/deny), polling qua token endpoint với đủ error codes (`authorization_pending`, `slow_down`, `expired_token`, `access_denied`); device_code hash SHA-256, user_code 8 ký tự không nhầm lẫn, single-use, bind client |
+| Token Exchange (RFC 8693) | ✅ `grant_type=token-exchange` trên token endpoint; chỉ confidential client; subject_token phải là access token còn sống; scope = subset của cả subject token lẫn client registration; token mới giữ nguyên `sub`, ghi delegation qua claim `act` |
+| Discovery mở rộng | ✅ `device_authorization_endpoint` + `grant_types_supported` trong OIDC discovery |
 
 ### Phase 4 — Nâng cao & Production Ops (~2–3 tuần, chọn lọc theo nhu cầu)
 

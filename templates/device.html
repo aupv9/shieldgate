@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ShieldGate - Device Verification</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+            padding: 40px;
+            width: 100%;
+            max-width: 400px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .container::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0;
+            height: 4px;
+            background: linear-gradient(90deg, #667eea, #764ba2);
+        }
+
+        .logo { text-align: center; margin-bottom: 30px; }
+        .logo h1 { color: #333; font-size: 28px; font-weight: 700; margin-bottom: 8px; }
+        .logo p { color: #666; font-size: 14px; }
+
+        .tenant-info {
+            background: #e8f4fd;
+            border: 1px solid #bee5eb;
+            border-radius: 6px;
+            padding: 12px;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        .tenant-info .tenant-name { font-weight: 600; color: #0c5460; font-size: 14px; }
+
+        .form-group { margin-bottom: 20px; }
+        .form-group label {
+            display: block;
+            margin-bottom: 6px;
+            color: #333;
+            font-weight: 500;
+            font-size: 14px;
+        }
+        .form-group input {
+            width: 100%;
+            padding: 12px 16px;
+            border: 2px solid #e1e5e9;
+            border-radius: 8px;
+            font-size: 16px;
+            background: #fff;
+        }
+        .form-group input:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        .user-code-input {
+            text-align: center;
+            font-size: 22px !important;
+            letter-spacing: 4px;
+            text-transform: uppercase;
+            font-family: 'SF Mono', SFMono-Regular, Consolas, monospace;
+        }
+
+        .error-message {
+            background: #fdecea;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+            border-radius: 6px;
+            padding: 12px;
+            margin-bottom: 20px;
+            font-size: 14px;
+        }
+
+        .result-message {
+            background: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+            border-radius: 6px;
+            padding: 16px;
+            margin-bottom: 20px;
+            font-size: 15px;
+            text-align: center;
+        }
+
+        .btn {
+            width: 100%;
+            border: none;
+            padding: 14px 20px;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            margin-bottom: 12px;
+        }
+        .btn-approve {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        .btn-deny {
+            background: #fff;
+            color: #e74c3c;
+            border: 2px solid #e74c3c;
+        }
+
+        .security-info {
+            text-align: center;
+            color: #666;
+            font-size: 12px;
+            line-height: 1.4;
+            margin-top: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="logo">
+            <h1>🛡️ ShieldGate</h1>
+            <p>Device Verification</p>
+        </div>
+
+        {{if .tenant_info}}
+        <div class="tenant-info">
+            <div class="tenant-name">{{.tenant_info.name}}</div>
+        </div>
+        {{end}}
+
+        {{if .error}}
+        <div class="error-message">{{.error}}</div>
+        {{end}}
+
+        {{if .result}}
+        <div class="result-message">{{.result}}</div>
+        {{else}}
+        <form method="POST" action="/oauth/device">
+            <input type="hidden" name="csrf_token" value="{{.csrf_token}}">
+
+            <div class="form-group">
+                <label for="user_code">Code shown on your device</label>
+                <input type="text" id="user_code" name="user_code" required
+                       class="user-code-input" placeholder="XXXX-XXXX"
+                       value="{{.user_code}}" autocomplete="off" maxlength="10">
+            </div>
+
+            <div class="form-group">
+                <label for="username">Email Address</label>
+                <input type="email" id="username" name="username" required
+                       placeholder="Enter your email address" autocomplete="username">
+            </div>
+
+            <div class="form-group">
+                <label for="password">Password</label>
+                <input type="password" id="password" name="password" required
+                       placeholder="Enter your password" autocomplete="current-password">
+            </div>
+
+            <button type="submit" class="btn btn-approve" name="action" value="approve">
+                Approve Device
+            </button>
+            <button type="submit" class="btn btn-deny" name="action" value="deny">
+                Deny Request
+            </button>
+        </form>
+        {{end}}
+
+        <div class="security-info">
+            🔒 Only approve devices you recognize.<br>
+            The code is shown on the device requesting access.
+        </div>
+    </div>
+</body>
+</html>

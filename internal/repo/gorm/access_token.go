@@ -58,6 +58,14 @@ func (r *accessTokenRepository) DeleteExpired(ctx context.Context) error {
 	return nil
 }
 
+func (r *accessTokenRepository) DeleteByFamilyID(ctx context.Context, tenantID, familyID uuid.UUID) error {
+	if err := r.db.WithContext(ctx).
+		Delete(&models.AccessToken{}, "tenant_id = ? AND family_id = ?", tenantID, familyID).Error; err != nil {
+		return fmt.Errorf("failed to delete access tokens by family ID: %w", err)
+	}
+	return nil
+}
+
 func (r *accessTokenRepository) DeleteByUserID(ctx context.Context, tenantID, userID uuid.UUID) error {
 	if err := r.db.WithContext(ctx).
 		Delete(&models.AccessToken{}, "tenant_id = ? AND user_id = ?", tenantID, userID).Error; err != nil {

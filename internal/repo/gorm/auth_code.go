@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type authCodeRepository struct {
@@ -40,6 +41,28 @@ func (r *authCodeRepository) GetByCode(ctx context.Context, tenantID uuid.UUID, 
 		return nil, fmt.Errorf("failed to get authorization code: %w", err)
 	}
 	return &authCode, nil
+}
+
+func (r *authCodeRepository) Consume(ctx context.Context, tenantID uuid.UUID, code string) (*models.AuthorizationCode, error) {
+	var authCode models.AuthorizationCode
+	result := r.db.WithContext(ctx).
+		Model(&authCode).
+		Clauses(clause.Returning{}).
+		Where("tenant_id = ? AND code = ? AND used_at IS NULL", tenantID, code).
+		Update("used_at", time.Now())
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to consume authorization code: %w", result.Error)
+	}
+	if result.RowsAffected > 0 {
+		return &authCode, nil
+	}
+
+	// No row updated: either the code does not exist or it was already used
+	existing, err := r.GetByCode(ctx, tenantID, code)
+	if err != nil {
+		return nil, models.ErrAuthCodeNotFound
+	}
+	return existing, models.ErrAuthCodeAlreadyUsed
 }
 
 func (r *authCodeRepository) Delete(ctx context.Context, tenantID uuid.UUID, code string) error {
