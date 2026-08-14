@@ -84,6 +84,14 @@ Bổ sung ngoài kế hoạch: PKCE compare dùng constant-time; `email_verified
 | 3.4 Logout | G13 | `end_session_endpoint` (RP-initiated logout), revoke session + `post_logout_redirect_uri` validation. |
 | 3.5 Tenant resolution theo domain | G18 | Resolve tenant từ `Host` header / path prefix cho browser flows; giữ `X-Tenant-ID` cho API M2M. |
 
+### Bổ sung — Grant types mở rộng ✅ HOÀN THÀNH (2026-08-02)
+
+| Task | Trạng thái |
+|------|-----------|
+| Device Authorization Grant (RFC 8628) | ✅ `POST /oauth/device_authorization` (client auth + scope/grant validation), trang xác thực `GET/POST /oauth/device` (CSRF, approve/deny), polling qua token endpoint với đủ error codes (`authorization_pending`, `slow_down`, `expired_token`, `access_denied`); device_code hash SHA-256, user_code 8 ký tự không nhầm lẫn, single-use, bind client |
+| Token Exchange (RFC 8693) | ✅ `grant_type=token-exchange` trên token endpoint; chỉ confidential client; subject_token phải là access token còn sống; scope = subset của cả subject token lẫn client registration; token mới giữ nguyên `sub`, ghi delegation qua claim `act` |
+| Discovery mở rộng | ✅ `device_authorization_endpoint` + `grant_types_supported` trong OIDC discovery |
+
 ### Phase 4 — Nâng cao & Production Ops (~2–3 tuần, chọn lọc theo nhu cầu)
 
 | Task | Việc cụ thể |

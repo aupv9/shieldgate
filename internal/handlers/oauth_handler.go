@@ -55,6 +55,9 @@ func (h *OAuthHandler) RegisterRoutes(router *gin.RouterGroup) {
 		oauth.POST("/token", h.HandleToken)
 		oauth.POST("/introspect", h.HandleIntrospect)
 		oauth.POST("/revoke", h.HandleRevoke)
+		oauth.POST("/device_authorization", h.HandleDeviceAuthorization)
+		oauth.GET("/device", h.HandleDeviceVerificationPage)
+		oauth.POST("/device", h.HandleDeviceVerification)
 	}
 
 	// OpenID Connect endpoints
@@ -291,6 +294,10 @@ func (h *OAuthHandler) HandleToken(c *gin.Context) {
 		h.handleRefreshTokenGrant(c, tenantID)
 	case "client_credentials":
 		h.handleClientCredentialsGrant(c, tenantID)
+	case models.GrantTypeDeviceCode:
+		h.handleDeviceCodeGrant(c, tenantID)
+	case models.GrantTypeTokenExchange:
+		h.handleTokenExchangeGrant(c, tenantID)
 	default:
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":             "unsupported_grant_type",

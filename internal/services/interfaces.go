@@ -82,6 +82,24 @@ type AuthService interface {
 	RevokeToken(ctx context.Context, tenantID uuid.UUID, token, tokenTypeHint string, requestingClientID uuid.UUID) error
 	IntrospectToken(ctx context.Context, tenantID uuid.UUID, token string) (*models.IntrospectionResponse, error)
 
+	// Device Authorization Grant (RFC 8628)
+	// CreateDeviceAuthorization starts a device flow for the client and returns
+	// the device_code / user_code pair
+	CreateDeviceAuthorization(ctx context.Context, tenantID uuid.UUID, client *models.Client, scope string) (*models.DeviceAuthorizationResponse, error)
+	// ApproveDeviceCode links the user-typed code to an authenticated user
+	ApproveDeviceCode(ctx context.Context, tenantID uuid.UUID, userCode string, userID uuid.UUID) error
+	// DenyDeviceCode marks the user-typed code as denied by the user
+	DenyDeviceCode(ctx context.Context, tenantID uuid.UUID, userCode string) error
+	// ExchangeDeviceCode is called by the polling device; returns
+	// ErrAuthorizationPending / ErrSlowDown / ErrExpiredDeviceCode /
+	// ErrDeviceAccessDenied until the flow completes
+	ExchangeDeviceCode(ctx context.Context, tenantID uuid.UUID, client *models.Client, deviceCode string) (*models.TokenResponse, error)
+
+	// Token Exchange (RFC 8693)
+	// ExchangeToken issues a new access token for the subject of subjectToken,
+	// acting on behalf of the authenticated client (delegation via the act claim)
+	ExchangeToken(ctx context.Context, tenantID uuid.UUID, client *models.Client, subjectToken, subjectTokenType, requestedScope string) (*models.TokenExchangeResponse, error)
+
 	// Token Validation
 	ValidateAccessToken(ctx context.Context, tenantID uuid.UUID, token string) (*models.JWTClaims, error)
 	ValidatePKCE(codeVerifier, codeChallenge, method string) bool

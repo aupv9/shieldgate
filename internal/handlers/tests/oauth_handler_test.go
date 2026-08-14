@@ -187,6 +187,40 @@ func (m *MockAuthService) GenerateTokens(ctx context.Context, tenantID, clientID
 	return args.Get(0).(*models.TokenResponse), args.Error(1)
 }
 
+func (m *MockAuthService) CreateDeviceAuthorization(ctx context.Context, tenantID uuid.UUID, client *models.Client, scope string) (*models.DeviceAuthorizationResponse, error) {
+	args := m.Called(ctx, tenantID, client, scope)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*models.DeviceAuthorizationResponse), args.Error(1)
+}
+
+func (m *MockAuthService) ApproveDeviceCode(ctx context.Context, tenantID uuid.UUID, userCode string, userID uuid.UUID) error {
+	args := m.Called(ctx, tenantID, userCode, userID)
+	return args.Error(0)
+}
+
+func (m *MockAuthService) DenyDeviceCode(ctx context.Context, tenantID uuid.UUID, userCode string) error {
+	args := m.Called(ctx, tenantID, userCode)
+	return args.Error(0)
+}
+
+func (m *MockAuthService) ExchangeDeviceCode(ctx context.Context, tenantID uuid.UUID, client *models.Client, deviceCode string) (*models.TokenResponse, error) {
+	args := m.Called(ctx, tenantID, client, deviceCode)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*models.TokenResponse), args.Error(1)
+}
+
+func (m *MockAuthService) ExchangeToken(ctx context.Context, tenantID uuid.UUID, client *models.Client, subjectToken, subjectTokenType, requestedScope string) (*models.TokenExchangeResponse, error) {
+	args := m.Called(ctx, tenantID, client, subjectToken, subjectTokenType, requestedScope)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*models.TokenExchangeResponse), args.Error(1)
+}
+
 func (m *MockAuthService) GenerateClientCredentialsTokens(ctx context.Context, tenantID uuid.UUID, client *models.Client, scope string) (*models.TokenResponse, error) {
 	args := m.Called(ctx, tenantID, client, scope)
 	if args.Get(0) == nil {

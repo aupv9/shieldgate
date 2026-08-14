@@ -686,7 +686,6 @@ func buildMIMEMessage(from, to, subject, bodyHTML, bodyText string) string {
 	return sb.String()
 }
 
-
 func (s *EmailServiceImpl) generateVerificationCode() (string, error) {
 	bytes := make([]byte, 16)
 	if _, err := rand.Read(bytes); err != nil {

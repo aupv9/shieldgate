@@ -331,6 +331,64 @@ func (r *fakeUserRepo) List(ctx context.Context, tenantID uuid.UUID, limit, offs
 	return nil, 0, nil
 }
 
+// --- fakeDeviceCodeRepo ---
+
+type fakeDeviceCodeRepo struct {
+	mu    sync.Mutex
+	codes map[string]*models.DeviceCode
+}
+
+func newFakeDeviceCodeRepo() *fakeDeviceCodeRepo {
+	return &fakeDeviceCodeRepo{codes: make(map[string]*models.DeviceCode)}
+}
+
+func (r *fakeDeviceCodeRepo) Create(ctx context.Context, code *models.DeviceCode) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	stored := *code
+	r.codes[code.DeviceCode] = &stored
+	return nil
+}
+
+func (r *fakeDeviceCodeRepo) GetByDeviceCode(ctx context.Context, tenantID uuid.UUID, deviceCode string) (*models.DeviceCode, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if c, ok := r.codes[deviceCode]; ok && c.TenantID == tenantID {
+		copied := *c
+		return &copied, nil
+	}
+	return nil, models.ErrDeviceCodeNotFound
+}
+
+func (r *fakeDeviceCodeRepo) GetByUserCode(ctx context.Context, tenantID uuid.UUID, userCode string) (*models.DeviceCode, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, c := range r.codes {
+		if c.TenantID == tenantID && c.UserCode == userCode {
+			copied := *c
+			return &copied, nil
+		}
+	}
+	return nil, models.ErrDeviceCodeNotFound
+}
+
+func (r *fakeDeviceCodeRepo) Update(ctx context.Context, code *models.DeviceCode) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	stored := *code
+	r.codes[code.DeviceCode] = &stored
+	return nil
+}
+
+func (r *fakeDeviceCodeRepo) Delete(ctx context.Context, tenantID uuid.UUID, deviceCode string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.codes, deviceCode)
+	return nil
+}
+
+func (r *fakeDeviceCodeRepo) DeleteExpired(ctx context.Context) error { return nil }
+
 // newFakeRepositories wires the fakes into a repo.Repositories aggregate
 func newFakeRepositories() *repo.Repositories {
 	return &repo.Repositories{
@@ -338,6 +396,7 @@ func newFakeRepositories() *repo.Repositories {
 		AuthCode:     newFakeAuthCodeRepo(),
 		AccessToken:  newFakeAccessTokenRepo(),
 		RefreshToken: newFakeRefreshTokenRepo(),
+		DeviceCode:   newFakeDeviceCodeRepo(),
 		User:         newFakeUserRepo(),
 	}
 }
