@@ -9,6 +9,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
@@ -102,7 +103,7 @@ func TestExchangeAuthorizationCode_Success_StoresHashedTokens(t *testing.T) {
 	tenantID, clientUUID := uuid.New(), uuid.New()
 	user := seedUser(t, repos, tenantID)
 
-	authCode, err := svc.GenerateAuthorizationCode(ctx, tenantID, clientUUID, user.ID, "https://app/cb", "openid read", "", "", "nonce-123")
+	authCode, err := svc.GenerateAuthorizationCode(ctx, tenantID, clientUUID, user.ID, "https://app/cb", "openid read", "", "", "nonce-123", time.Time{})
 	require.NoError(t, err)
 
 	tokens, err := svc.ExchangeAuthorizationCode(ctx, tenantID, authCode.Code, clientUUID.String(), "", "https://app/cb", "")
@@ -132,7 +133,7 @@ func TestExchangeAuthorizationCode_Reuse_RevokesIssuedTokens(t *testing.T) {
 	tenantID, clientUUID := uuid.New(), uuid.New()
 	userID := uuid.New()
 
-	authCode, err := svc.GenerateAuthorizationCode(ctx, tenantID, clientUUID, userID, "https://app/cb", "read", "", "", "")
+	authCode, err := svc.GenerateAuthorizationCode(ctx, tenantID, clientUUID, userID, "https://app/cb", "read", "", "", "", time.Time{})
 	require.NoError(t, err)
 
 	tokens, err := svc.ExchangeAuthorizationCode(ctx, tenantID, authCode.Code, clientUUID.String(), "", "https://app/cb", "")

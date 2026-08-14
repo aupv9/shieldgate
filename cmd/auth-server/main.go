@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
@@ -119,7 +120,13 @@ func main() {
 	router.Use(gin.Recovery())
 	router.Use(middleware.CORS(cfg))
 	router.Use(middleware.RateLimit(cfg))
-	router.Use(middleware.TenantContext(cfg))
+	router.Use(middleware.TenantContext(cfg, func(ctx context.Context, host string) (uuid.UUID, error) {
+		tenant, err := tenantService.GetByDomain(ctx, host)
+		if err != nil {
+			return uuid.Nil, err
+		}
+		return tenant.ID, nil
+	}))
 	router.Use(middleware.RequestID())
 
 	// Initialize handlers

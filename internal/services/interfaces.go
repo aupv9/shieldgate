@@ -66,7 +66,9 @@ type ClientService interface {
 // AuthService defines the interface for OAuth authentication business logic
 type AuthService interface {
 	// Authorization Code Flow
-	GenerateAuthorizationCode(ctx context.Context, tenantID, clientID, userID uuid.UUID, redirectURI, scope, codeChallenge, codeChallengeMethod, nonce string) (*models.AuthorizationCode, error)
+	// authTime is the instant the user actually authenticated (zero → now);
+	// it flows into the ID token's auth_time claim
+	GenerateAuthorizationCode(ctx context.Context, tenantID, clientID, userID uuid.UUID, redirectURI, scope, codeChallenge, codeChallengeMethod, nonce string, authTime time.Time) (*models.AuthorizationCode, error)
 	ExchangeAuthorizationCode(ctx context.Context, tenantID uuid.UUID, code, clientID, clientSecret, redirectURI, codeVerifier string) (*models.TokenResponse, error)
 
 	// Token Management
@@ -99,6 +101,16 @@ type AuthService interface {
 	// ExchangeToken issues a new access token for the subject of subjectToken,
 	// acting on behalf of the authenticated client (delegation via the act claim)
 	ExchangeToken(ctx context.Context, tenantID uuid.UUID, client *models.Client, subjectToken, subjectTokenType, requestedScope string) (*models.TokenExchangeResponse, error)
+
+	// Sessions (server-side SSO)
+	// CreateSession returns the raw cookie value; only its hash is stored
+	CreateSession(ctx context.Context, tenantID, userID uuid.UUID, ipAddress, userAgent string) (string, *models.UserSession, error)
+	GetSession(ctx context.Context, tenantID uuid.UUID, token string) (*models.UserSession, error)
+	RevokeSession(ctx context.Context, tenantID uuid.UUID, token string) error
+
+	// Consent (remembered authorization grants)
+	HasConsent(ctx context.Context, tenantID, userID, clientID uuid.UUID, scope string) (bool, error)
+	GrantConsent(ctx context.Context, tenantID, userID, clientID uuid.UUID, scope string) error
 
 	// Token Validation
 	ValidateAccessToken(ctx context.Context, tenantID uuid.UUID, token string) (*models.JWTClaims, error)

@@ -188,6 +188,37 @@ func Migrate(db *gorm.DB) error {
 		`ALTER TABLE authorization_codes ADD COLUMN IF NOT EXISTS nonce VARCHAR(255)`,
 		`ALTER TABLE authorization_codes ADD COLUMN IF NOT EXISTS auth_time TIMESTAMP WITH TIME ZONE`,
 
+		// Create user_sessions table (server-side SSO sessions)
+		`CREATE TABLE IF NOT EXISTS user_sessions (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL,
+			user_id UUID NOT NULL,
+			token VARCHAR(255) NOT NULL,
+			ip_address VARCHAR(45),
+			user_agent TEXT,
+			auth_time TIMESTAMP WITH TIME ZONE NOT NULL,
+			expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+			revoked_at TIMESTAMP WITH TIME ZONE,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_user_sessions_token ON user_sessions(token)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_sessions_tenant_id ON user_sessions(tenant_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_sessions_user_id ON user_sessions(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_sessions_expires_at ON user_sessions(expires_at)`,
+
+		// Create user_consents table (remembered authorization grants)
+		`CREATE TABLE IF NOT EXISTS user_consents (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL,
+			user_id UUID NOT NULL,
+			client_id UUID NOT NULL,
+			scope TEXT NOT NULL,
+			granted_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+			revoked_at TIMESTAMP WITH TIME ZONE
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_consents_tenant_id ON user_consents(tenant_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_consents_user_client ON user_consents(user_id, client_id)`,
+
 		// Phase 1 hardening: columns for token hashing, rotation families,
 		// and authorization-code reuse detection on databases created before
 		// these fields existed (ALTER ... IF NOT EXISTS keeps this idempotent)

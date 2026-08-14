@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ShieldGate - Authorize Application</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+            padding: 40px;
+            width: 100%;
+            max-width: 420px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .container::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0;
+            height: 4px;
+            background: linear-gradient(90deg, #667eea, #764ba2);
+        }
+
+        .logo { text-align: center; margin-bottom: 24px; }
+        .logo h1 { color: #333; font-size: 28px; font-weight: 700; margin-bottom: 8px; }
+        .logo p { color: #666; font-size: 14px; }
+
+        .tenant-info {
+            background: #e8f4fd;
+            border: 1px solid #bee5eb;
+            border-radius: 6px;
+            padding: 12px;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        .tenant-info .tenant-name { font-weight: 600; color: #0c5460; font-size: 14px; }
+
+        .consent-info {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 20px;
+            border-left: 4px solid #667eea;
+        }
+        .consent-info .client-name { font-weight: 600; color: #667eea; }
+        .consent-info p { color: #444; font-size: 15px; }
+
+        .scope-list {
+            background: #fff3cd;
+            border: 1px solid #ffeaa7;
+            border-radius: 6px;
+            padding: 14px;
+            margin-bottom: 24px;
+        }
+        .scope-list h4 { color: #856404; font-size: 14px; margin-bottom: 8px; }
+        .scope-list ul { list-style: none; }
+        .scope-list li {
+            color: #856404;
+            font-size: 14px;
+            margin-bottom: 6px;
+            padding-left: 18px;
+            position: relative;
+            font-family: 'SF Mono', SFMono-Regular, Consolas, monospace;
+        }
+        .scope-list li::before {
+            content: '✓';
+            position: absolute;
+            left: 0;
+            color: #28a745;
+            font-weight: bold;
+        }
+
+        .btn {
+            width: 100%;
+            border: none;
+            padding: 14px 20px;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            margin-bottom: 12px;
+        }
+        .btn-approve {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        .btn-deny {
+            background: #fff;
+            color: #e74c3c;
+            border: 2px solid #e74c3c;
+        }
+
+        .security-info {
+            text-align: center;
+            color: #666;
+            font-size: 12px;
+            line-height: 1.4;
+            margin-top: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="logo">
+            <h1>🛡️ ShieldGate</h1>
+            <p>Authorization Request</p>
+        </div>
+
+        {{if .tenant_info}}
+        <div class="tenant-info">
+            <div class="tenant-name">{{.tenant_info.name}}</div>
+        </div>
+        {{end}}
+
+        <div class="consent-info">
+            <p><span class="client-name">{{.client_name}}</span> is requesting access to your account.</p>
+        </div>
+
+        {{if .scopes}}
+        <div class="scope-list">
+            <h4>This application will be able to:</h4>
+            <ul>
+                {{range .scopes}}<li>{{.}}</li>{{end}}
+            </ul>
+        </div>
+        {{end}}
+
+        <form method="POST" action="/oauth/consent">
+            <input type="hidden" name="client_id" value="{{.client_id}}">
+            <input type="hidden" name="redirect_uri" value="{{.redirect_uri}}">
+            <input type="hidden" name="scope" value="{{.scope}}">
+            <input type="hidden" name="state" value="{{.state}}">
+            <input type="hidden" name="code_challenge" value="{{.code_challenge}}">
+            <input type="hidden" name="code_challenge_method" value="{{.code_challenge_method}}">
+            <input type="hidden" name="nonce" value="{{.nonce}}">
+            <input type="hidden" name="csrf_token" value="{{.csrf_token}}">
+
+            <button type="submit" class="btn btn-approve" name="action" value="approve">
+                Allow Access
+            </button>
+            <button type="submit" class="btn btn-deny" name="action" value="deny">
+                Deny
+            </button>
+        </form>
+
+        <div class="security-info">
+            🔒 You can revoke this access at any time.<br>
+            Only approve applications you trust.
+        </div>
+    </div>
+</body>
+</html>

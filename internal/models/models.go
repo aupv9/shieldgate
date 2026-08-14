@@ -316,6 +316,43 @@ func (dc *DeviceCode) IsExpired() bool {
 	return !time.Now().Before(dc.ExpiresAt)
 }
 
+// UserSession is a server-side browser session created at login (SSO).
+// Token stores a SHA-256 hash of the session cookie value.
+type UserSession struct {
+	ID        uuid.UUID  `json:"id" gorm:"type:uuid;primary_key;default:gen_random_uuid()"`
+	TenantID  uuid.UUID  `json:"tenant_id" gorm:"type:uuid;not null;index"`
+	UserID    uuid.UUID  `json:"user_id" gorm:"type:uuid;not null;index"`
+	Token     string     `json:"-" gorm:"not null;size:255;uniqueIndex"`
+	IPAddress string     `json:"ip_address" gorm:"size:45"`
+	UserAgent string     `json:"user_agent" gorm:"type:text"`
+	AuthTime  time.Time  `json:"auth_time" gorm:"not null"`
+	ExpiresAt time.Time  `json:"expires_at" gorm:"not null;index"`
+	RevokedAt *time.Time `json:"revoked_at"`
+	CreatedAt time.Time  `json:"created_at" gorm:"autoCreateTime"`
+}
+
+// IsExpired checks if the session is expired
+func (s *UserSession) IsExpired() bool {
+	return !time.Now().Before(s.ExpiresAt)
+}
+
+// IsRevoked checks if the session has been revoked (logout)
+func (s *UserSession) IsRevoked() bool {
+	return s.RevokedAt != nil
+}
+
+// UserConsent records that a user granted a client access to a scope set.
+// Consent accumulates: the effective grant is the union of unrevoked rows.
+type UserConsent struct {
+	ID        uuid.UUID  `json:"id" gorm:"type:uuid;primary_key;default:gen_random_uuid()"`
+	TenantID  uuid.UUID  `json:"tenant_id" gorm:"type:uuid;not null;index"`
+	UserID    uuid.UUID  `json:"user_id" gorm:"type:uuid;not null;index:idx_user_consents_user_client"`
+	ClientID  uuid.UUID  `json:"client_id" gorm:"type:uuid;not null;index:idx_user_consents_user_client"`
+	Scope     string     `json:"scope" gorm:"type:text;not null"`
+	GrantedAt time.Time  `json:"granted_at" gorm:"autoCreateTime"`
+	RevokedAt *time.Time `json:"revoked_at"`
+}
+
 // DeviceAuthorizationResponse is the response of the device authorization
 // endpoint (RFC 8628 §3.2)
 type DeviceAuthorizationResponse struct {
@@ -614,6 +651,8 @@ type AuthorizeRequest struct {
 	CodeChallenge       string `form:"code_challenge"`
 	CodeChallengeMethod string `form:"code_challenge_method"`
 	Nonce               string `form:"nonce"`
+	Prompt              string `form:"prompt"`
+	MaxAge              string `form:"max_age"`
 }
 
 // TokenRequest represents an OAuth token request

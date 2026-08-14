@@ -99,6 +99,22 @@ type SigningKeyRepository interface {
 	DeactivateAll(ctx context.Context) error
 }
 
+// SessionRepository defines the interface for server-side SSO session storage
+type SessionRepository interface {
+	Create(ctx context.Context, session *models.UserSession) error
+	GetByToken(ctx context.Context, tenantID uuid.UUID, token string) (*models.UserSession, error)
+	Revoke(ctx context.Context, tenantID uuid.UUID, token string) error
+	RevokeByUserID(ctx context.Context, tenantID, userID uuid.UUID) error
+	DeleteExpired(ctx context.Context) error
+}
+
+// ConsentRepository defines the interface for remembered authorization grants
+type ConsentRepository interface {
+	Create(ctx context.Context, consent *models.UserConsent) error
+	ListByUserAndClient(ctx context.Context, tenantID, userID, clientID uuid.UUID) ([]*models.UserConsent, error)
+	RevokeByUserAndClient(ctx context.Context, tenantID, userID, clientID uuid.UUID) error
+}
+
 // Repositories aggregates all repository interfaces
 type Repositories struct {
 	Tenant            TenantRepository
@@ -109,6 +125,8 @@ type Repositories struct {
 	RefreshToken      RefreshTokenRepository
 	DeviceCode        DeviceCodeRepository
 	SigningKey        SigningKeyRepository
+	Session           SessionRepository
+	Consent           ConsentRepository
 	Role              RoleRepository
 	Permission        PermissionRepository
 	UserRole          UserRoleRepository
