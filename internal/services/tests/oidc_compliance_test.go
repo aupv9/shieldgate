@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"testing"
+	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
@@ -107,7 +108,7 @@ func TestIDToken_CarriesNonceAtHashAuthTime(t *testing.T) {
 	tenantID, clientUUID := uuid.New(), uuid.New()
 	user := seedUser(t, repos, tenantID)
 
-	authCode, err := svc.GenerateAuthorizationCode(ctx, tenantID, clientUUID, user.ID, "https://app/cb", "openid", "", "", "nonce-xyz")
+	authCode, err := svc.GenerateAuthorizationCode(ctx, tenantID, clientUUID, user.ID, "https://app/cb", "openid", "", "", "nonce-xyz", time.Time{})
 	require.NoError(t, err)
 
 	tokens, err := svc.ExchangeAuthorizationCode(ctx, tenantID, authCode.Code, clientUUID.String(), "", "https://app/cb", "")

@@ -25,8 +25,16 @@ const (
 	ClientIDKey  = "client_id"
 )
 
+// TenantResolver maps a request Host to a tenant, enabling browser flows to
+// work without an X-Tenant-ID header (each tenant serves on its own domain)
+type TenantResolver func(ctx context.Context, host string) (uuid.UUID, error)
+
 // TenantContext middleware extracts and validates tenant context
-func TenantContext(cfg *config.Config) gin.HandlerFunc {
+func TenantContext(cfg *config.Config, resolvers ...TenantResolver) gin.HandlerFunc {
+	var resolver TenantResolver
+	if len(resolvers) > 0 {
+		resolver = resolvers[0]
+	}
 	return func(c *gin.Context) {
 		// Generate request ID for tracing
 		requestID := uuid.New().String()
@@ -35,7 +43,7 @@ func TenantContext(cfg *config.Config) gin.HandlerFunc {
 
 		// For OAuth endpoints, try to extract tenant but don't fail if not found
 		if isOAuthEndpoint(c.Request.URL.Path) {
-			if tenantID, err := extractTenantID(c, cfg.JWTSecret); err == nil {
+			if tenantID, err := extractTenantID(c, cfg.JWTSecret, resolver); err == nil {
 				c.Set(TenantIDKey, tenantID)
 				logrus.WithFields(logrus.Fields{
 					"request_id": requestID,
@@ -55,7 +63,7 @@ func TenantContext(cfg *config.Config) gin.HandlerFunc {
 		}
 
 		// Extract tenant ID from various sources
-		tenantID, err := extractTenantID(c, cfg.JWTSecret)
+		tenantID, err := extractTenantID(c, cfg.JWTSecret, resolver)
 		if err != nil {
 			logrus.WithFields(logrus.Fields{
 				"request_id": requestID,
@@ -236,7 +244,7 @@ func GetClientID(c *gin.Context) (uuid.UUID, error) {
 }
 
 // extractTenantID extracts tenant ID from various request sources
-func extractTenantID(c *gin.Context, jwtSecret string) (uuid.UUID, error) {
+func extractTenantID(c *gin.Context, jwtSecret string, resolver TenantResolver) (uuid.UUID, error) {
 	// 1. Try to extract from JWT token (preferred for authenticated requests)
 	if authHeader := c.GetHeader("Authorization"); authHeader != "" {
 		if strings.HasPrefix(authHeader, "Bearer ") {
@@ -257,6 +265,18 @@ func extractTenantID(c *gin.Context, jwtSecret string) (uuid.UUID, error) {
 	// 3. Try to extract from subdomain (e.g., <uuid>.api.example.com)
 	if tenantID, err := extractTenantFromSubdomain(c.Request.Host); err == nil {
 		return tenantID, nil
+	}
+
+	// 4. Resolve the request domain against registered tenant domains
+	// (browser flows: each tenant serves the authorization UI on its own host)
+	if resolver != nil {
+		host := c.Request.Host
+		if idx := strings.Index(host, ":"); idx != -1 {
+			host = host[:idx]
+		}
+		if tenantID, err := resolver(c.Request.Context(), host); err == nil && tenantID != uuid.Nil {
+			return tenantID, nil
+		}
 	}
 
 	return uuid.Nil, fmt.Errorf("tenant ID not found in request")
@@ -297,6 +317,8 @@ func isOAuthEndpoint(path string) bool {
 		"/oauth/revoke",
 		"/oauth/device", // covers /oauth/device and /oauth/device_authorization
 		"/oauth/login",
+		"/oauth/consent",
+		"/oauth/logout",
 		"/.well-known/openid-configuration",
 		"/.well-known/jwks.json",
 		"/userinfo",

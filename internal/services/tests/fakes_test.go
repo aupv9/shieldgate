@@ -454,6 +454,103 @@ func (r *fakeSigningKeyRepo) DeactivateAll(ctx context.Context) error {
 	return nil
 }
 
+// --- fakeSessionRepo ---
+
+type fakeSessionRepo struct {
+	mu       sync.Mutex
+	sessions map[string]*models.UserSession
+}
+
+func newFakeSessionRepo() *fakeSessionRepo {
+	return &fakeSessionRepo{sessions: make(map[string]*models.UserSession)}
+}
+
+func (r *fakeSessionRepo) Create(ctx context.Context, session *models.UserSession) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	stored := *session
+	r.sessions[session.Token] = &stored
+	return nil
+}
+
+func (r *fakeSessionRepo) GetByToken(ctx context.Context, tenantID uuid.UUID, token string) (*models.UserSession, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if s, ok := r.sessions[token]; ok && s.TenantID == tenantID {
+		copied := *s
+		return &copied, nil
+	}
+	return nil, models.ErrSessionNotFound
+}
+
+func (r *fakeSessionRepo) Revoke(ctx context.Context, tenantID uuid.UUID, token string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if s, ok := r.sessions[token]; ok && s.TenantID == tenantID && s.RevokedAt == nil {
+		now := time.Now()
+		s.RevokedAt = &now
+	}
+	return nil
+}
+
+func (r *fakeSessionRepo) RevokeByUserID(ctx context.Context, tenantID, userID uuid.UUID) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := time.Now()
+	for _, s := range r.sessions {
+		if s.TenantID == tenantID && s.UserID == userID && s.RevokedAt == nil {
+			s.RevokedAt = &now
+		}
+	}
+	return nil
+}
+
+func (r *fakeSessionRepo) DeleteExpired(ctx context.Context) error { return nil }
+
+// --- fakeConsentRepo ---
+
+type fakeConsentRepo struct {
+	mu       sync.Mutex
+	consents []*models.UserConsent
+}
+
+func newFakeConsentRepo() *fakeConsentRepo {
+	return &fakeConsentRepo{}
+}
+
+func (r *fakeConsentRepo) Create(ctx context.Context, consent *models.UserConsent) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	stored := *consent
+	r.consents = append(r.consents, &stored)
+	return nil
+}
+
+func (r *fakeConsentRepo) ListByUserAndClient(ctx context.Context, tenantID, userID, clientID uuid.UUID) ([]*models.UserConsent, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []*models.UserConsent
+	for _, c := range r.consents {
+		if c.TenantID == tenantID && c.UserID == userID && c.ClientID == clientID && c.RevokedAt == nil {
+			copied := *c
+			out = append(out, &copied)
+		}
+	}
+	return out, nil
+}
+
+func (r *fakeConsentRepo) RevokeByUserAndClient(ctx context.Context, tenantID, userID, clientID uuid.UUID) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := time.Now()
+	for _, c := range r.consents {
+		if c.TenantID == tenantID && c.UserID == userID && c.ClientID == clientID && c.RevokedAt == nil {
+			c.RevokedAt = &now
+		}
+	}
+	return nil
+}
+
 // newFakeRepositories wires the fakes into a repo.Repositories aggregate
 func newFakeRepositories() *repo.Repositories {
 	return &repo.Repositories{
@@ -463,6 +560,8 @@ func newFakeRepositories() *repo.Repositories {
 		RefreshToken: newFakeRefreshTokenRepo(),
 		DeviceCode:   newFakeDeviceCodeRepo(),
 		SigningKey:   newFakeSigningKeyRepo(),
+		Session:      newFakeSessionRepo(),
+		Consent:      newFakeConsentRepo(),
 		User:         newFakeUserRepo(),
 	}
 }

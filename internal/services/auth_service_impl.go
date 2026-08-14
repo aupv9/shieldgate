@@ -47,7 +47,7 @@ func hashToken(token string) string {
 	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
-func (s *authServiceImpl) GenerateAuthorizationCode(ctx context.Context, tenantID, clientID, userID uuid.UUID, redirectURI, scope, codeChallenge, codeChallengeMethod, nonce string) (*models.AuthorizationCode, error) {
+func (s *authServiceImpl) GenerateAuthorizationCode(ctx context.Context, tenantID, clientID, userID uuid.UUID, redirectURI, scope, codeChallenge, codeChallengeMethod, nonce string, authTime time.Time) (*models.AuthorizationCode, error) {
 	// Generate random code
 	code, err := s.generateRandomString(32)
 	if err != nil {
@@ -56,6 +56,9 @@ func (s *authServiceImpl) GenerateAuthorizationCode(ctx context.Context, tenantI
 
 	// Create authorization code
 	now := time.Now()
+	if authTime.IsZero() {
+		authTime = now
+	}
 	authCode := &models.AuthorizationCode{
 		ID:                  uuid.New(),
 		TenantID:            tenantID,
@@ -67,7 +70,7 @@ func (s *authServiceImpl) GenerateAuthorizationCode(ctx context.Context, tenantI
 		CodeChallenge:       codeChallenge,
 		CodeChallengeMethod: codeChallengeMethod,
 		Nonce:               nonce,
-		AuthTime:            &now,
+		AuthTime:            &authTime,
 		ExpiresAt:           now.Add(s.config.AuthorizationCodeDuration),
 	}
 
@@ -538,6 +541,12 @@ func (s *authServiceImpl) CleanupExpiredTokens(ctx context.Context) error {
 	if s.repos.DeviceCode != nil {
 		if err := s.repos.DeviceCode.DeleteExpired(ctx); err != nil {
 			s.logger.WithError(err).Error("failed to cleanup expired device codes")
+		}
+	}
+
+	if s.repos.Session != nil {
+		if err := s.repos.Session.DeleteExpired(ctx); err != nil {
+			s.logger.WithError(err).Error("failed to cleanup expired sessions")
 		}
 	}
 

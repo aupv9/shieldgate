@@ -173,9 +173,40 @@ type MockAuthService struct {
 	mock.Mock
 }
 
-func (m *MockAuthService) GenerateAuthorizationCode(ctx context.Context, tenantID, clientID, userID uuid.UUID, redirectURI, scope, codeChallenge, codeChallengeMethod, nonce string) (*models.AuthorizationCode, error) {
-	args := m.Called(ctx, tenantID, clientID, userID, redirectURI, scope, codeChallenge, codeChallengeMethod, nonce)
+func (m *MockAuthService) GenerateAuthorizationCode(ctx context.Context, tenantID, clientID, userID uuid.UUID, redirectURI, scope, codeChallenge, codeChallengeMethod, nonce string, authTime time.Time) (*models.AuthorizationCode, error) {
+	args := m.Called(ctx, tenantID, clientID, userID, redirectURI, scope, codeChallenge, codeChallengeMethod, nonce, authTime)
 	return args.Get(0).(*models.AuthorizationCode), args.Error(1)
+}
+
+func (m *MockAuthService) CreateSession(ctx context.Context, tenantID, userID uuid.UUID, ipAddress, userAgent string) (string, *models.UserSession, error) {
+	args := m.Called(ctx, tenantID, userID, ipAddress, userAgent)
+	if args.Get(1) == nil {
+		return args.String(0), nil, args.Error(2)
+	}
+	return args.String(0), args.Get(1).(*models.UserSession), args.Error(2)
+}
+
+func (m *MockAuthService) GetSession(ctx context.Context, tenantID uuid.UUID, token string) (*models.UserSession, error) {
+	args := m.Called(ctx, tenantID, token)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*models.UserSession), args.Error(1)
+}
+
+func (m *MockAuthService) RevokeSession(ctx context.Context, tenantID uuid.UUID, token string) error {
+	args := m.Called(ctx, tenantID, token)
+	return args.Error(0)
+}
+
+func (m *MockAuthService) HasConsent(ctx context.Context, tenantID, userID, clientID uuid.UUID, scope string) (bool, error) {
+	args := m.Called(ctx, tenantID, userID, clientID, scope)
+	return args.Bool(0), args.Error(1)
+}
+
+func (m *MockAuthService) GrantConsent(ctx context.Context, tenantID, userID, clientID uuid.UUID, scope string) error {
+	args := m.Called(ctx, tenantID, userID, clientID, scope)
+	return args.Error(0)
 }
 
 func (m *MockAuthService) ExchangeAuthorizationCode(ctx context.Context, tenantID uuid.UUID, code, clientID, clientSecret, redirectURI, codeVerifier string) (*models.TokenResponse, error) {
@@ -422,12 +453,21 @@ func TestOAuthHandler_HandleLogin_Success(t *testing.T) {
 
 	tenant := &models.Tenant{ID: tenantID, Name: "Test Tenant"}
 
+	session := &models.UserSession{
+		ID:       uuid.New(),
+		TenantID: tenantID,
+		UserID:   userID,
+		AuthTime: time.Now(),
+	}
+
 	// Setup mocks
 	mockUserService.On("Authenticate", mock.Anything, tenantID, "test@example.com", "password123").Return(user, nil)
 	mockClientService.On("GetByClientID", mock.Anything, tenantID, clientID).Return(client, nil)
 	mockClientService.On("ValidateRedirectURI", mock.Anything, mock.AnythingOfType("*models.Client"), redirectURI).Return(nil)
 	mockTenantService.On("GetByID", mock.Anything, tenantID).Return(tenant, nil)
-	mockAuthService.On("GenerateAuthorizationCode", mock.Anything, tenantID, clientUUID, userID, redirectURI, "read", "test-challenge", "S256", "test-nonce").Return(authCode, nil)
+	mockAuthService.On("CreateSession", mock.Anything, tenantID, userID, mock.Anything, mock.Anything).Return("session-token", session, nil)
+	mockAuthService.On("HasConsent", mock.Anything, tenantID, userID, clientUUID, "read").Return(true, nil)
+	mockAuthService.On("GenerateAuthorizationCode", mock.Anything, tenantID, clientUUID, userID, redirectURI, "read", "test-challenge", "S256", "test-nonce", mock.AnythingOfType("time.Time")).Return(authCode, nil)
 
 	// Setup router (templates needed for the authorize step that issues the CSRF token)
 	router := gin.New()

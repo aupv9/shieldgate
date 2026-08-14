@@ -58,6 +58,9 @@ func (h *OAuthHandler) RegisterRoutes(router *gin.RouterGroup) {
 		oauth.POST("/device_authorization", h.HandleDeviceAuthorization)
 		oauth.GET("/device", h.HandleDeviceVerificationPage)
 		oauth.POST("/device", h.HandleDeviceVerification)
+		oauth.POST("/consent", h.HandleConsent)
+		oauth.GET("/logout", h.HandleLogout)
+		oauth.POST("/logout", h.HandleLogout)
 	}
 
 	// OpenID Connect endpoints
@@ -92,6 +95,8 @@ func (h *OAuthHandler) HandleAuthorize(c *gin.Context) {
 		CodeChallenge:       c.Query("code_challenge"),
 		CodeChallengeMethod: c.Query("code_challenge_method"),
 		Nonce:               c.Query("nonce"),
+		Prompt:              c.Query("prompt"),
+		MaxAge:              c.Query("max_age"),
 	}
 
 	// Validate request
@@ -123,7 +128,8 @@ func (h *OAuthHandler) HandleAuthorize(c *gin.Context) {
 	}
 
 	// Requested scopes must be within the client's registered scopes
-	if _, err := services.ValidateScopeForClient(client, req.Scope); err != nil {
+	grantedScope, err := services.ValidateScopeForClient(client, req.Scope)
+	if err != nil {
 		h.renderError(c, "invalid_scope", "Requested scope is not allowed for this client", req.RedirectURI)
 		return
 	}
@@ -140,11 +146,53 @@ func (h *OAuthHandler) HandleAuthorize(c *gin.Context) {
 		}
 	}
 
+	// prompt=none must not be combined with other prompt values (OIDC Core §3.1.2.1)
+	prompts := parsePrompt(req.Prompt)
+	if prompts["none"] && len(prompts) > 1 {
+		h.redirectAuthError(c, req.RedirectURI, "invalid_request", "prompt=none cannot be combined with other values", req.State)
+		return
+	}
+
+	// SSO: an existing session skips the login form unless the request forces
+	// re-authentication (prompt=login) or the authentication is too old (max_age)
+	session := h.currentSession(c, tenantID)
+	if session != nil && (prompts["login"] || maxAgeExceeded(session, req.MaxAge)) {
+		session = nil
+	}
+
 	// Get tenant info for display
 	tenant, _ := h.tenantService.GetByID(c.Request.Context(), tenantID)
 
-	// Render login page
-	h.renderLoginPage(c, req, client, tenant)
+	if session == nil {
+		if prompts["none"] {
+			h.redirectAuthError(c, req.RedirectURI, "login_required", "User authentication is required", req.State)
+			return
+		}
+		h.renderLoginPage(c, req, client, tenant)
+		return
+	}
+
+	// Consent: skip only when every requested scope was already granted
+	needConsent := prompts["consent"]
+	if !needConsent {
+		hasConsent, err := h.authService.HasConsent(c.Request.Context(), tenantID, session.UserID, client.ID, grantedScope)
+		if err != nil || !hasConsent {
+			needConsent = true
+		}
+	}
+	if needConsent {
+		if prompts["none"] {
+			h.redirectAuthError(c, req.RedirectURI, "consent_required", "User consent is required", req.State)
+			return
+		}
+		h.renderConsentPage(c, req, client, tenant, grantedScope)
+		return
+	}
+
+	h.completeAuthorization(c, tenantID, client, session.UserID,
+		req.RedirectURI, grantedScope, req.State,
+		req.CodeChallenge, req.CodeChallengeMethod, req.Nonce,
+		session.AuthTime)
 }
 
 // HandleLogin handles login form submission
@@ -232,47 +280,35 @@ func (h *OAuthHandler) HandleLogin(c *gin.Context) {
 	}
 	scope = grantedScope
 
-	// Generate authorization code
-	authCode, err := h.authService.GenerateAuthorizationCode(
-		c.Request.Context(),
-		tenantID,
-		client.ID,
-		user.ID,
-		redirectURI,
-		scope,
-		codeChallenge,
-		codeChallengeMethod,
-		nonce,
-	)
+	// Establish the SSO session so later authorize requests skip the login form
+	sessionToken, session, err := h.authService.CreateSession(c.Request.Context(), tenantID, user.ID, c.ClientIP(), c.Request.UserAgent())
 	if err != nil {
-		h.logger.WithError(err).Error("failed to generate authorization code")
+		h.logger.WithError(err).Error("failed to create session")
 		h.renderError(c, "server_error", "Internal server error", redirectURI)
 		return
 	}
+	h.setSessionCookie(c, sessionToken)
 
-	// Build redirect URL
-	redirectURL, err := url.Parse(redirectURI)
-	if err != nil {
-		h.logger.WithError(err).Error("invalid redirect URI")
-		h.renderError(c, "invalid_request", "Invalid redirect URI", "")
+	// Consent: show the consent screen unless every scope was granted before
+	hasConsent, err := h.authService.HasConsent(c.Request.Context(), tenantID, user.ID, client.ID, scope)
+	if err != nil || !hasConsent {
+		tenant, _ := h.tenantService.GetByID(c.Request.Context(), tenantID)
+		req := &models.AuthorizeRequest{
+			ClientID:            clientID,
+			RedirectURI:         redirectURI,
+			Scope:               scope,
+			State:               state,
+			CodeChallenge:       codeChallenge,
+			CodeChallengeMethod: codeChallengeMethod,
+			Nonce:               nonce,
+		}
+		h.renderConsentPage(c, req, client, tenant, scope)
 		return
 	}
 
-	query := redirectURL.Query()
-	query.Set("code", authCode.Code)
-	if state != "" {
-		query.Set("state", state)
-	}
-	redirectURL.RawQuery = query.Encode()
-
-	h.logger.WithFields(logrus.Fields{
-		"tenant_id": tenantID,
-		"user_id":   user.ID,
-		"client_id": clientID,
-	}).Info("authorization code generated successfully")
-
-	// Redirect to client
-	c.Redirect(http.StatusFound, redirectURL.String())
+	h.completeAuthorization(c, tenantID, client, user.ID,
+		redirectURI, scope, state, codeChallenge, codeChallengeMethod, nonce,
+		session.AuthTime)
 }
 
 // HandleToken handles token exchange requests
