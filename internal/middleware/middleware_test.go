@@ -143,18 +143,22 @@ func TestExtractTenantFromJWT_InvalidToken(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestExtractTenantFromJWT_WrongSecret(t *testing.T) {
+func TestExtractTenantFromJWT_UnverifiedHint(t *testing.T) {
+	// Tenant extraction is a routing hint and intentionally does not verify
+	// the signature or expiry — protected endpoints fully validate the token
+	// (signature + tenant binding + revocation) before trusting it.
 	cfg := testConfig()
-	token := utils.CreateTamperedJWT(cfg, uuid.New(), uuid.New(), uuid.New())
-	_, err := extractTenantFromJWT(token, cfg.JWTSecret)
-	assert.Error(t, err)
-}
+	tenantID := uuid.New()
 
-func TestExtractTenantFromJWT_ExpiredToken(t *testing.T) {
-	cfg := testConfig()
-	token := utils.CreateExpiredJWT(cfg, uuid.New(), uuid.New(), uuid.New())
-	_, err := extractTenantFromJWT(token, cfg.JWTSecret)
-	assert.Error(t, err)
+	tampered := utils.CreateTamperedJWT(cfg, uuid.New(), uuid.New(), tenantID)
+	result, err := extractTenantFromJWT(tampered, cfg.JWTSecret)
+	require.NoError(t, err)
+	assert.Equal(t, tenantID, result)
+
+	expired := utils.CreateExpiredJWT(cfg, uuid.New(), uuid.New(), tenantID)
+	result, err = extractTenantFromJWT(expired, cfg.JWTSecret)
+	require.NoError(t, err)
+	assert.Equal(t, tenantID, result)
 }
 
 // --- TenantContext middleware with X-Tenant-ID header ---

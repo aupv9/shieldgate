@@ -171,6 +171,23 @@ func Migrate(db *gorm.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_device_codes_tenant_id ON device_codes(tenant_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_device_codes_expires_at ON device_codes(expires_at)`,
 
+		// Create signing_keys table (asymmetric token signing, JWKS)
+		`CREATE TABLE IF NOT EXISTS signing_keys (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			kid VARCHAR(64) NOT NULL,
+			algorithm VARCHAR(20) NOT NULL,
+			private_key_pem TEXT NOT NULL,
+			is_active BOOLEAN NOT NULL DEFAULT false,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+			retired_at TIMESTAMP WITH TIME ZONE
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_signing_keys_kid ON signing_keys(kid)`,
+		`CREATE INDEX IF NOT EXISTS idx_signing_keys_is_active ON signing_keys(is_active)`,
+
+		// OIDC: nonce + auth_time on authorization codes
+		`ALTER TABLE authorization_codes ADD COLUMN IF NOT EXISTS nonce VARCHAR(255)`,
+		`ALTER TABLE authorization_codes ADD COLUMN IF NOT EXISTS auth_time TIMESTAMP WITH TIME ZONE`,
+
 		// Phase 1 hardening: columns for token hashing, rotation families,
 		// and authorization-code reuse detection on databases created before
 		// these fields existed (ALTER ... IF NOT EXISTS keeps this idempotent)

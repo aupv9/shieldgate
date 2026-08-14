@@ -16,5 +16,6 @@ func NewRepositories(db *gorm.DB) *repo.Repositories {
 		AccessToken:  NewAccessTokenRepository(db),
 		RefreshToken: NewRefreshTokenRepository(db),
 		DeviceCode:   NewDeviceCodeRepository(db),
+		SigningKey:   NewSigningKeyRepository(db),
 	}
 }

@@ -102,7 +102,7 @@ func TestExchangeAuthorizationCode_Success_StoresHashedTokens(t *testing.T) {
 	tenantID, clientUUID := uuid.New(), uuid.New()
 	user := seedUser(t, repos, tenantID)
 
-	authCode, err := svc.GenerateAuthorizationCode(ctx, tenantID, clientUUID, user.ID, "https://app/cb", "openid read", "", "")
+	authCode, err := svc.GenerateAuthorizationCode(ctx, tenantID, clientUUID, user.ID, "https://app/cb", "openid read", "", "", "nonce-123")
 	require.NoError(t, err)
 
 	tokens, err := svc.ExchangeAuthorizationCode(ctx, tenantID, authCode.Code, clientUUID.String(), "", "https://app/cb", "")
@@ -132,7 +132,7 @@ func TestExchangeAuthorizationCode_Reuse_RevokesIssuedTokens(t *testing.T) {
 	tenantID, clientUUID := uuid.New(), uuid.New()
 	userID := uuid.New()
 
-	authCode, err := svc.GenerateAuthorizationCode(ctx, tenantID, clientUUID, userID, "https://app/cb", "read", "", "")
+	authCode, err := svc.GenerateAuthorizationCode(ctx, tenantID, clientUUID, userID, "https://app/cb", "read", "", "", "")
 	require.NoError(t, err)
 
 	tokens, err := svc.ExchangeAuthorizationCode(ctx, tenantID, authCode.Code, clientUUID.String(), "", "https://app/cb", "")

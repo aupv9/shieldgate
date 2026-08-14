@@ -32,6 +32,8 @@ type Config struct {
 	AuthorizationCodeDuration time.Duration
 	DeviceCodeDuration        time.Duration
 	DeviceCodePollInterval    int
+	IDTokenDuration           time.Duration
+	SessionDuration           time.Duration
 
 	// CORS
 	CORSAllowedOrigins string
@@ -83,6 +85,8 @@ func Load() (*Config, error) {
 	viper.BindEnv("security.authorization_code_duration", "AUTHORIZATION_CODE_DURATION")
 	viper.BindEnv("security.device_code_duration", "DEVICE_CODE_DURATION")
 	viper.BindEnv("security.device_code_poll_interval", "DEVICE_CODE_POLL_INTERVAL")
+	viper.BindEnv("security.id_token_duration", "ID_TOKEN_DURATION")
+	viper.BindEnv("security.session_duration", "SESSION_DURATION")
 	viper.BindEnv("cors.allowed_origins", "CORS_ALLOWED_ORIGINS")
 	viper.BindEnv("cors.allowed_methods", "CORS_ALLOWED_METHODS")
 	viper.BindEnv("cors.allowed_headers", "CORS_ALLOWED_HEADERS")
@@ -132,6 +136,8 @@ func Load() (*Config, error) {
 		AuthorizationCodeDuration: time.Duration(viper.GetInt("security.authorization_code_duration")) * time.Second,
 		DeviceCodeDuration:        time.Duration(viper.GetInt("security.device_code_duration")) * time.Second,
 		DeviceCodePollInterval:    viper.GetInt("security.device_code_poll_interval"),
+		IDTokenDuration:           time.Duration(viper.GetInt("security.id_token_duration")) * time.Second,
+		SessionDuration:           time.Duration(viper.GetInt("security.session_duration")) * time.Second,
 
 		// CORS
 		CORSAllowedOrigins: viper.GetString("cors.allowed_origins"),
@@ -179,6 +185,8 @@ func setDefaults() {
 	viper.SetDefault("security.authorization_code_duration", 600)
 	viper.SetDefault("security.device_code_duration", 600)
 	viper.SetDefault("security.device_code_poll_interval", 5)
+	viper.SetDefault("security.id_token_duration", 3600)
+	viper.SetDefault("security.session_duration", 86400)
 
 	// CORS defaults
 	viper.SetDefault("cors.allowed_origins", "*")

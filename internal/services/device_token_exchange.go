@@ -12,7 +12,6 @@ import (
 
 	"shieldgate/internal/models"
 
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 )
@@ -229,8 +228,7 @@ func (s *authServiceImpl) ExchangeToken(ctx context.Context, tenantID uuid.UUID,
 		UserID:   subjectClaims.UserID,
 		Act:      &models.ActorClaim{Sub: client.ID.String()},
 	}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	accessToken, err := token.SignedString([]byte(s.config.JWTSecret))
+	accessToken, err := s.signToken(ctx, claims)
 	if err != nil {
 		return nil, err
 	}

@@ -168,6 +168,7 @@ func (h *OAuthHandler) HandleLogin(c *gin.Context) {
 	state := c.PostForm("state")
 	codeChallenge := c.PostForm("code_challenge")
 	codeChallengeMethod := c.PostForm("code_challenge_method")
+	nonce := c.PostForm("nonce")
 
 	// CSRF protection: the hidden form token must match the signed cookie
 	cookieToken, _ := c.Cookie(csrfCookieName)
@@ -241,6 +242,7 @@ func (h *OAuthHandler) HandleLogin(c *gin.Context) {
 		scope,
 		codeChallenge,
 		codeChallengeMethod,
+		nonce,
 	)
 	if err != nil {
 		h.logger.WithError(err).Error("failed to generate authorization code")
@@ -520,21 +522,16 @@ func (h *OAuthHandler) HandleDiscovery(c *gin.Context) {
 	c.JSON(http.StatusOK, discovery)
 }
 
-// HandleJWKS handles JWKS endpoint.
-// This server uses HS256 (symmetric HMAC). The shared secret is never exposed via JWKS.
-// The entry below advertises the signing algorithm so OIDC discovery clients can read
-// key metadata. Token validation requires the shared JWT secret (out-of-band).
+// HandleJWKS serves the JSON Web Key Set: the public halves of all serving
+// RS256 signing keys, so clients can verify ID and access tokens offline.
 func (h *OAuthHandler) HandleJWKS(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{
-		"keys": []gin.H{
-			{
-				"kty": "oct",
-				"use": "sig",
-				"alg": "HS256",
-				"kid": "default",
-			},
-		},
-	})
+	jwks, err := h.authService.GetJWKS(c.Request.Context())
+	if err != nil {
+		h.logger.WithError(err).Error("failed to build JWKS")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "server_error"})
+		return
+	}
+	c.JSON(http.StatusOK, jwks)
 }
 
 // HandleIntrospect handles token introspection (RFC 7662).
@@ -641,6 +638,7 @@ func (h *OAuthHandler) renderLoginPage(c *gin.Context, req *models.AuthorizeRequ
 		"state":                 req.State,
 		"code_challenge":        req.CodeChallenge,
 		"code_challenge_method": req.CodeChallengeMethod,
+		"nonce":                 req.Nonce,
 		"response_type":         "code",
 		"csrf_token":            csrfToken,
 	}
