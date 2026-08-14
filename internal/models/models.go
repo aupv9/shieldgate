@@ -14,9 +14,9 @@ import (
 
 // Custom error types for business logic
 var (
-	ErrResourceNotFound         = errors.New("resource not found")
-	ErrDuplicateResource        = errors.New("duplicate resource")
-	ErrBusinessRuleViolation    = errors.New("business rule violation")
+	ErrResourceNotFound        = errors.New("resource not found")
+	ErrDuplicateResource       = errors.New("duplicate resource")
+	ErrBusinessRuleViolation   = errors.New("business rule violation")
 	ErrTenantNotFound          = errors.New("tenant not found")
 	ErrUserNotFound            = errors.New("user not found")
 	ErrClientNotFound          = errors.New("client not found")
@@ -43,6 +43,14 @@ var (
 	ErrInvalidVerificationCode = errors.New("invalid verification code")
 	ErrVerificationExpired     = errors.New("verification code expired")
 	ErrPKCEVerificationFailed  = errors.New("pkce verification failed")
+	ErrAuthCodeAlreadyUsed     = errors.New("authorization code already used")
+	ErrUnauthorizedClient      = errors.New("client is not authorized for this grant type")
+	// Device authorization grant errors (RFC 8628 §3.5)
+	ErrDeviceCodeNotFound   = errors.New("device code not found")
+	ErrAuthorizationPending = errors.New("authorization pending")
+	ErrSlowDown             = errors.New("polling too frequently")
+	ErrExpiredDeviceCode    = errors.New("device code expired")
+	ErrDeviceAccessDenied   = errors.New("access denied by user")
 )
 
 // Error codes for API responses
@@ -196,58 +204,145 @@ type User struct {
 	Roles []UserRole `json:"roles,omitempty" gorm:"foreignKey:UserID"`
 }
 
-// Client represents an OAuth 2.0 client
+// Client represents an OAuth 2.0 client.
+// ClientSecret holds a bcrypt hash and is never serialized. PlainClientSecret
+// carries the generated secret exactly once — in the response of the create
+// (or confidential-rotation) call — and is never persisted.
 type Client struct {
-	ID           uuid.UUID      `json:"id" gorm:"type:uuid;primary_key;default:gen_random_uuid()"`
-	TenantID     uuid.UUID      `json:"tenant_id" gorm:"type:uuid;not null;index:idx_clients_tenant_id"`
-	ClientID     string         `json:"client_id" gorm:"not null;size:255;index:idx_clients_tenant_client_id,unique"`
-	ClientSecret string         `json:"client_secret,omitempty" gorm:"size:255"`
-	Name         string         `json:"name" gorm:"not null;size:255"`
-	RedirectURIs StringArray    `json:"redirect_uris" gorm:"type:jsonb;not null;default:'[]'"`
-	GrantTypes   StringArray    `json:"grant_types" gorm:"type:jsonb;not null;default:'[]'"`
-	Scopes       StringArray    `json:"scopes" gorm:"type:jsonb;not null;default:'[]'"`
-	IsPublic     bool           `json:"is_public" gorm:"not null;default:false"`
-	CreatedAt    time.Time      `json:"created_at" gorm:"autoCreateTime"`
-	UpdatedAt    time.Time      `json:"updated_at" gorm:"autoUpdateTime"`
-	DeletedAt    gorm.DeletedAt `json:"-" gorm:"index"`
+	ID                uuid.UUID      `json:"id" gorm:"type:uuid;primary_key;default:gen_random_uuid()"`
+	TenantID          uuid.UUID      `json:"tenant_id" gorm:"type:uuid;not null;index:idx_clients_tenant_id"`
+	ClientID          string         `json:"client_id" gorm:"not null;size:255;index:idx_clients_tenant_client_id,unique"`
+	ClientSecret      string         `json:"-" gorm:"size:255"`
+	PlainClientSecret string         `json:"client_secret,omitempty" gorm:"-"`
+	Name              string         `json:"name" gorm:"not null;size:255"`
+	RedirectURIs      StringArray    `json:"redirect_uris" gorm:"type:jsonb;not null;default:'[]'"`
+	GrantTypes        StringArray    `json:"grant_types" gorm:"type:jsonb;not null;default:'[]'"`
+	Scopes            StringArray    `json:"scopes" gorm:"type:jsonb;not null;default:'[]'"`
+	IsPublic          bool           `json:"is_public" gorm:"not null;default:false"`
+	CreatedAt         time.Time      `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt         time.Time      `json:"updated_at" gorm:"autoUpdateTime"`
+	DeletedAt         gorm.DeletedAt `json:"-" gorm:"index"`
 }
 
 // AuthorizationCode represents an OAuth 2.0 authorization code
 type AuthorizationCode struct {
-	ID                  uuid.UUID `json:"id" gorm:"type:uuid;primary_key;default:gen_random_uuid()"`
-	TenantID            uuid.UUID `json:"tenant_id" gorm:"type:uuid;not null;index"`
-	Code                string    `json:"code" gorm:"not null;size:255;uniqueIndex"`
-	ClientID            uuid.UUID `json:"client_id" gorm:"type:uuid;not null;index"`
-	UserID              uuid.UUID `json:"user_id" gorm:"type:uuid;not null;index"`
-	RedirectURI         string    `json:"redirect_uri" gorm:"not null;size:255"`
-	Scope               string    `json:"scope" gorm:"type:text"`
-	CodeChallenge       string    `json:"code_challenge" gorm:"size:255"`
-	CodeChallengeMethod string    `json:"code_challenge_method" gorm:"size:50"`
-	ExpiresAt           time.Time `json:"expires_at" gorm:"not null;index"`
-	CreatedAt           time.Time `json:"created_at" gorm:"autoCreateTime"`
+	ID                  uuid.UUID  `json:"id" gorm:"type:uuid;primary_key;default:gen_random_uuid()"`
+	TenantID            uuid.UUID  `json:"tenant_id" gorm:"type:uuid;not null;index"`
+	Code                string     `json:"code" gorm:"not null;size:255;uniqueIndex"`
+	ClientID            uuid.UUID  `json:"client_id" gorm:"type:uuid;not null;index"`
+	UserID              uuid.UUID  `json:"user_id" gorm:"type:uuid;not null;index"`
+	RedirectURI         string     `json:"redirect_uri" gorm:"not null;size:255"`
+	Scope               string     `json:"scope" gorm:"type:text"`
+	CodeChallenge       string     `json:"code_challenge" gorm:"size:255"`
+	CodeChallengeMethod string     `json:"code_challenge_method" gorm:"size:50"`
+	UsedAt              *time.Time `json:"used_at"`
+	ExpiresAt           time.Time  `json:"expires_at" gorm:"not null;index"`
+	CreatedAt           time.Time  `json:"created_at" gorm:"autoCreateTime"`
 }
 
-// AccessToken represents an OAuth 2.0 access token
+// AccessToken represents an OAuth 2.0 access token.
+// Token stores a SHA-256 hash of the issued token, never the raw value.
+// FamilyID groups tokens issued from the same grant so a compromised
+// authorization code or refresh token can revoke everything it produced.
 type AccessToken struct {
 	ID        uuid.UUID `json:"id" gorm:"type:uuid;primary_key;default:gen_random_uuid()"`
 	TenantID  uuid.UUID `json:"tenant_id" gorm:"type:uuid;not null;index"`
-	Token     string    `json:"token" gorm:"not null;size:255;uniqueIndex"`
+	Token     string    `json:"-" gorm:"not null;size:255;uniqueIndex"`
 	ClientID  uuid.UUID `json:"client_id" gorm:"type:uuid;not null;index"`
 	UserID    uuid.UUID `json:"user_id" gorm:"type:uuid;not null;index"`
+	FamilyID  uuid.UUID `json:"family_id" gorm:"type:uuid;index"`
 	Scope     string    `json:"scope" gorm:"type:text"`
 	ExpiresAt time.Time `json:"expires_at" gorm:"not null;index"`
 	CreatedAt time.Time `json:"created_at" gorm:"autoCreateTime"`
 }
 
-// RefreshToken represents an OAuth 2.0 refresh token
+// RefreshToken represents an OAuth 2.0 refresh token.
+// Token stores a SHA-256 hash. Rotated tokens are kept with RevokedAt set so
+// a replay of an already-rotated token can be detected and the whole family revoked.
 type RefreshToken struct {
-	ID        uuid.UUID `json:"id" gorm:"type:uuid;primary_key;default:gen_random_uuid()"`
-	TenantID  uuid.UUID `json:"tenant_id" gorm:"type:uuid;not null;index"`
-	Token     string    `json:"token" gorm:"not null;size:255;uniqueIndex"`
-	ClientID  uuid.UUID `json:"client_id" gorm:"type:uuid;not null;index"`
-	UserID    uuid.UUID `json:"user_id" gorm:"type:uuid;not null;index"`
-	ExpiresAt time.Time `json:"expires_at" gorm:"not null;index"`
-	CreatedAt time.Time `json:"created_at" gorm:"autoCreateTime"`
+	ID        uuid.UUID  `json:"id" gorm:"type:uuid;primary_key;default:gen_random_uuid()"`
+	TenantID  uuid.UUID  `json:"tenant_id" gorm:"type:uuid;not null;index"`
+	Token     string     `json:"-" gorm:"not null;size:255;uniqueIndex"`
+	ClientID  uuid.UUID  `json:"client_id" gorm:"type:uuid;not null;index"`
+	UserID    uuid.UUID  `json:"user_id" gorm:"type:uuid;not null;index"`
+	FamilyID  uuid.UUID  `json:"family_id" gorm:"type:uuid;index"`
+	Scope     string     `json:"scope" gorm:"type:text"`
+	RevokedAt *time.Time `json:"revoked_at"`
+	ExpiresAt time.Time  `json:"expires_at" gorm:"not null;index"`
+	CreatedAt time.Time  `json:"created_at" gorm:"autoCreateTime"`
+}
+
+// IsRevoked reports whether the refresh token has been rotated or revoked
+func (rt *RefreshToken) IsRevoked() bool {
+	return rt.RevokedAt != nil
+}
+
+// DeviceCodeStatus tracks the lifecycle of a device authorization request
+type DeviceCodeStatus string
+
+const (
+	DeviceCodePending  DeviceCodeStatus = "pending"
+	DeviceCodeApproved DeviceCodeStatus = "approved"
+	DeviceCodeDenied   DeviceCodeStatus = "denied"
+)
+
+// DeviceCode represents a device authorization request (RFC 8628).
+// DeviceCode stores a SHA-256 hash of the device_code credential; UserCode is
+// the short human-typed code shown on the device (stored normalized).
+type DeviceCode struct {
+	ID           uuid.UUID        `json:"id" gorm:"type:uuid;primary_key;default:gen_random_uuid()"`
+	TenantID     uuid.UUID        `json:"tenant_id" gorm:"type:uuid;not null;index"`
+	DeviceCode   string           `json:"-" gorm:"not null;size:255;uniqueIndex"`
+	UserCode     string           `json:"user_code" gorm:"not null;size:32;uniqueIndex"`
+	ClientID     uuid.UUID        `json:"client_id" gorm:"type:uuid;not null;index"`
+	UserID       *uuid.UUID       `json:"user_id" gorm:"type:uuid;index"`
+	Scope        string           `json:"scope" gorm:"type:text"`
+	Status       DeviceCodeStatus `json:"status" gorm:"not null;size:20;default:'pending';index"`
+	Interval     int              `json:"interval" gorm:"not null;default:5"`
+	LastPolledAt *time.Time       `json:"last_polled_at"`
+	ExpiresAt    time.Time        `json:"expires_at" gorm:"not null;index"`
+	CreatedAt    time.Time        `json:"created_at" gorm:"autoCreateTime"`
+}
+
+// IsExpired checks if the device code is expired
+func (dc *DeviceCode) IsExpired() bool {
+	return !time.Now().Before(dc.ExpiresAt)
+}
+
+// DeviceAuthorizationResponse is the response of the device authorization
+// endpoint (RFC 8628 §3.2)
+type DeviceAuthorizationResponse struct {
+	DeviceCode              string `json:"device_code"`
+	UserCode                string `json:"user_code"`
+	VerificationURI         string `json:"verification_uri"`
+	VerificationURIComplete string `json:"verification_uri_complete"`
+	ExpiresIn               int64  `json:"expires_in"`
+	Interval                int    `json:"interval"`
+}
+
+// Token exchange token type identifiers (RFC 8693 §3)
+const (
+	TokenTypeAccessToken = "urn:ietf:params:oauth:token-type:access_token"
+)
+
+// Grant type URN identifiers
+const (
+	GrantTypeDeviceCode    = "urn:ietf:params:oauth:grant-type:device_code"
+	GrantTypeTokenExchange = "urn:ietf:params:oauth:grant-type:token-exchange"
+)
+
+// TokenExchangeResponse is the response of a token exchange (RFC 8693 §2.2.1)
+type TokenExchangeResponse struct {
+	AccessToken     string `json:"access_token"`
+	IssuedTokenType string `json:"issued_token_type"`
+	TokenType       string `json:"token_type"`
+	ExpiresIn       int64  `json:"expires_in"`
+	Scope           string `json:"scope,omitempty"`
+}
+
+// IsUsed reports whether the authorization code has already been exchanged
+func (ac *AuthorizationCode) IsUsed() bool {
+	return ac.UsedAt != nil
 }
 
 // TokenResponse represents the OAuth 2.0 token response
@@ -285,26 +380,35 @@ type OpenIDConfiguration struct {
 	TokenEndpoint                    string   `json:"token_endpoint"`
 	UserInfoEndpoint                 string   `json:"userinfo_endpoint"`
 	JwksURI                          string   `json:"jwks_uri"`
+	DeviceAuthorizationEndpoint      string   `json:"device_authorization_endpoint,omitempty"`
 	ResponseTypesSupported           []string `json:"response_types_supported"`
+	GrantTypesSupported              []string `json:"grant_types_supported,omitempty"`
 	SubjectTypesSupported            []string `json:"subject_types_supported"`
 	IDTokenSigningAlgValuesSupported []string `json:"id_token_signing_alg_values_supported"`
 	ScopesSupported                  []string `json:"scopes_supported"`
 	ClaimsSupported                  []string `json:"claims_supported"`
 }
 
+// ActorClaim identifies the acting party in a delegation scenario
+// (RFC 8693 §4.1 "act" claim)
+type ActorClaim struct {
+	Sub string `json:"sub"`
+}
+
 // JWTClaims represents JWT token claims
 type JWTClaims struct {
-	Sub      string `json:"sub"`
-	Aud      string `json:"aud"`
-	Iss      string `json:"iss"`
-	Exp      int64  `json:"exp"`
-	Iat      int64  `json:"iat"`
-	TenantID string `json:"tenant_id"`
-	Scope    string `json:"scope,omitempty"`
-	ClientID string `json:"client_id,omitempty"`
-	UserID   string `json:"user_id,omitempty"`
-	Email    string `json:"email,omitempty"`
-	Name     string `json:"name,omitempty"`
+	Sub      string      `json:"sub"`
+	Aud      string      `json:"aud"`
+	Iss      string      `json:"iss"`
+	Exp      int64       `json:"exp"`
+	Iat      int64       `json:"iat"`
+	TenantID string      `json:"tenant_id"`
+	Scope    string      `json:"scope,omitempty"`
+	ClientID string      `json:"client_id,omitempty"`
+	UserID   string      `json:"user_id,omitempty"`
+	Email    string      `json:"email,omitempty"`
+	Name     string      `json:"name,omitempty"`
+	Act      *ActorClaim `json:"act,omitempty"`
 }
 
 // GetExpirationTime implements jwt.Claims interface

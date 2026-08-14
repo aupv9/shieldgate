@@ -28,6 +28,8 @@ func CreateTestConfig() *config.Config {
 		AccessTokenDuration:       time.Hour,
 		RefreshTokenDuration:      24 * time.Hour,
 		AuthorizationCodeDuration: 10 * time.Minute,
+		DeviceCodeDuration:        10 * time.Minute,
+		DeviceCodePollInterval:    5,
 		BcryptCost:                4, // Lower cost for faster tests
 		ServerURL:                 "http://localhost:8080",
 	}

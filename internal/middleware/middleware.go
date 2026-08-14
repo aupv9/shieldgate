@@ -96,8 +96,16 @@ func RequestID() gin.HandlerFunc {
 	}
 }
 
-// RequireAuth middleware validates JWT token and sets user/client/tenant context
-func RequireAuth(cfg *config.Config) gin.HandlerFunc {
+// AccessTokenValidator performs full access-token validation, including
+// revocation checks against the token store. services.AuthService satisfies it.
+type AccessTokenValidator interface {
+	ValidateAccessToken(ctx context.Context, tenantID uuid.UUID, token string) (*models.JWTClaims, error)
+}
+
+// RequireAuth middleware validates JWT token and sets user/client/tenant context.
+// When an AccessTokenValidator is supplied, revoked tokens are rejected even if
+// their signature is still valid.
+func RequireAuth(cfg *config.Config, validators ...AccessTokenValidator) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
@@ -137,6 +145,21 @@ func RequireAuth(cfg *config.Config) gin.HandlerFunc {
 			RespondWithError(c, http.StatusUnauthorized, models.ErrorCodeUnauthorized, "Invalid token claims", nil)
 			c.Abort()
 			return
+		}
+
+		// Enforce revocation via the token store when a validator is wired in
+		if len(validators) > 0 && validators[0] != nil {
+			tenantID, parseErr := uuid.Parse(claims.TenantID)
+			if parseErr != nil {
+				RespondWithError(c, http.StatusUnauthorized, models.ErrorCodeUnauthorized, "Invalid token claims", nil)
+				c.Abort()
+				return
+			}
+			if _, err := validators[0].ValidateAccessToken(c.Request.Context(), tenantID, tokenString); err != nil {
+				RespondWithError(c, http.StatusUnauthorized, models.ErrorCodeUnauthorized, "Invalid or expired token", nil)
+				c.Abort()
+				return
+			}
 		}
 
 		// Set authenticated context values from JWT claims
@@ -265,6 +288,8 @@ func isOAuthEndpoint(path string) bool {
 		"/oauth/token",
 		"/oauth/introspect",
 		"/oauth/revoke",
+		"/oauth/device", // covers /oauth/device and /oauth/device_authorization
+		"/oauth/login",
 		"/.well-known/openid-configuration",
 		"/.well-known/jwks.json",
 		"/userinfo",

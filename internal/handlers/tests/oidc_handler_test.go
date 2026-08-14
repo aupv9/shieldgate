@@ -5,8 +5,8 @@ import (
 	"html/template"
 	"net/http"
 	"net/http/httptest"
-	"testing"
 	"strings"
+	"testing"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -32,7 +32,7 @@ func newOIDCRouter(
 	logger := logrus.New()
 	logger.SetLevel(logrus.FatalLevel)
 
-	handler := handlers.NewOAuthHandler(mockTenant, mockUser, mockClient, mockAuth, logger)
+	handler := handlers.NewOAuthHandler(utils.CreateTestConfig(), mockTenant, mockUser, mockClient, mockAuth, logger)
 	r := gin.New()
 	r.SetFuncMap(template.FuncMap{
 		"contains": func(s, substr string) bool { return strings.Contains(s, substr) },
@@ -125,7 +125,7 @@ func TestHandleUserInfo_ValidToken_ReturnsClaims(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	logger := logrus.New()
 	logger.SetLevel(logrus.FatalLevel)
-	handler := handlers.NewOAuthHandler(new(MockTenantService), new(MockUserService), new(MockClientService), mockAuth, logger)
+	handler := handlers.NewOAuthHandler(utils.CreateTestConfig(), new(MockTenantService), new(MockUserService), new(MockClientService), mockAuth, logger)
 
 	r := gin.New()
 	// Pre-inject tenant context (simulates TenantContext middleware with JWT)
@@ -154,7 +154,7 @@ func TestHandleUserInfo_MissingToken_Returns401(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	logger := logrus.New()
 	logger.SetLevel(logrus.FatalLevel)
-	handler := handlers.NewOAuthHandler(new(MockTenantService), new(MockUserService), new(MockClientService), new(MockAuthService), logger)
+	handler := handlers.NewOAuthHandler(utils.CreateTestConfig(), new(MockTenantService), new(MockUserService), new(MockClientService), new(MockAuthService), logger)
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
