@@ -86,6 +86,19 @@ type DeviceCodeRepository interface {
 	DeleteExpired(ctx context.Context) error
 }
 
+// SigningKeyRepository defines the interface for token-signing key storage.
+// Keys are server-global (not tenant-scoped).
+type SigningKeyRepository interface {
+	Create(ctx context.Context, key *models.SigningKey) error
+	GetActive(ctx context.Context) (*models.SigningKey, error)
+	GetByKID(ctx context.Context, kid string) (*models.SigningKey, error)
+	// ListServing returns all keys that should still verify tokens and appear
+	// in JWKS (active + rotated-but-not-retired)
+	ListServing(ctx context.Context) ([]*models.SigningKey, error)
+	// DeactivateAll clears the active flag ahead of promoting a new key
+	DeactivateAll(ctx context.Context) error
+}
+
 // Repositories aggregates all repository interfaces
 type Repositories struct {
 	Tenant            TenantRepository
@@ -95,6 +108,7 @@ type Repositories struct {
 	AccessToken       AccessTokenRepository
 	RefreshToken      RefreshTokenRepository
 	DeviceCode        DeviceCodeRepository
+	SigningKey        SigningKeyRepository
 	Role              RoleRepository
 	Permission        PermissionRepository
 	UserRole          UserRoleRepository

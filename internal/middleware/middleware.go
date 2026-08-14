@@ -127,39 +127,51 @@ func RequireAuth(cfg *config.Config, validators ...AccessTokenValidator) gin.Han
 			return
 		}
 
-		token, err := jwt.ParseWithClaims(tokenString, &models.JWTClaims{}, func(token *jwt.Token) (interface{}, error) {
-			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-			}
-			return []byte(cfg.JWTSecret), nil
-		})
+		var claims *models.JWTClaims
 
-		if err != nil || !token.Valid {
-			RespondWithError(c, http.StatusUnauthorized, models.ErrorCodeUnauthorized, "Invalid or expired token", nil)
-			c.Abort()
-			return
-		}
-
-		claims, ok := token.Claims.(*models.JWTClaims)
-		if !ok {
-			RespondWithError(c, http.StatusUnauthorized, models.ErrorCodeUnauthorized, "Invalid token claims", nil)
-			c.Abort()
-			return
-		}
-
-		// Enforce revocation via the token store when a validator is wired in
 		if len(validators) > 0 && validators[0] != nil {
-			tenantID, parseErr := uuid.Parse(claims.TenantID)
+			// Full validation path (supports RS256 + revocation checks):
+			// read the tenant hint from unverified claims, then let the
+			// validator verify signature, tenant binding and revocation state
+			hint := &models.JWTClaims{}
+			if _, _, err := jwt.NewParser().ParseUnverified(tokenString, hint); err != nil {
+				RespondWithError(c, http.StatusUnauthorized, models.ErrorCodeUnauthorized, "Invalid or expired token", nil)
+				c.Abort()
+				return
+			}
+			tenantID, parseErr := uuid.Parse(hint.TenantID)
 			if parseErr != nil {
 				RespondWithError(c, http.StatusUnauthorized, models.ErrorCodeUnauthorized, "Invalid token claims", nil)
 				c.Abort()
 				return
 			}
-			if _, err := validators[0].ValidateAccessToken(c.Request.Context(), tenantID, tokenString); err != nil {
+			verified, err := validators[0].ValidateAccessToken(c.Request.Context(), tenantID, tokenString)
+			if err != nil {
 				RespondWithError(c, http.StatusUnauthorized, models.ErrorCodeUnauthorized, "Invalid or expired token", nil)
 				c.Abort()
 				return
 			}
+			claims = verified
+		} else {
+			// Legacy standalone path: HS256 with the shared secret
+			token, err := jwt.ParseWithClaims(tokenString, &models.JWTClaims{}, func(token *jwt.Token) (interface{}, error) {
+				if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+					return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+				}
+				return []byte(cfg.JWTSecret), nil
+			})
+			if err != nil || !token.Valid {
+				RespondWithError(c, http.StatusUnauthorized, models.ErrorCodeUnauthorized, "Invalid or expired token", nil)
+				c.Abort()
+				return
+			}
+			parsed, ok := token.Claims.(*models.JWTClaims)
+			if !ok {
+				RespondWithError(c, http.StatusUnauthorized, models.ErrorCodeUnauthorized, "Invalid token claims", nil)
+				c.Abort()
+				return
+			}
+			claims = parsed
 		}
 
 		// Set authenticated context values from JWT claims
@@ -250,23 +262,18 @@ func extractTenantID(c *gin.Context, jwtSecret string) (uuid.UUID, error) {
 	return uuid.Nil, fmt.Errorf("tenant ID not found in request")
 }
 
-// extractTenantFromJWT parses a JWT token and extracts the tenant_id claim
+// extractTenantFromJWT reads the tenant_id claim as a routing hint. The claim
+// is intentionally read without signature verification: tenant context only
+// scopes lookups, and every protected endpoint fully validates the token
+// (signature + tenant binding + revocation) before trusting it.
 func extractTenantFromJWT(tokenString, jwtSecret string) (uuid.UUID, error) {
-	token, err := jwt.ParseWithClaims(tokenString, &models.JWTClaims{}, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-		}
-		return []byte(jwtSecret), nil
-	})
-	if err != nil || !token.Valid {
+	claims := &models.JWTClaims{}
+	if _, _, err := jwt.NewParser().ParseUnverified(tokenString, claims); err != nil {
 		return uuid.Nil, fmt.Errorf("invalid token")
 	}
-
-	claims, ok := token.Claims.(*models.JWTClaims)
-	if !ok || claims.TenantID == "" {
+	if claims.TenantID == "" {
 		return uuid.Nil, fmt.Errorf("tenant_id claim not found in token")
 	}
-
 	return uuid.Parse(claims.TenantID)
 }
 

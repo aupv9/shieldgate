@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -172,8 +173,8 @@ type MockAuthService struct {
 	mock.Mock
 }
 
-func (m *MockAuthService) GenerateAuthorizationCode(ctx context.Context, tenantID, clientID, userID uuid.UUID, redirectURI, scope, codeChallenge, codeChallengeMethod string) (*models.AuthorizationCode, error) {
-	args := m.Called(ctx, tenantID, clientID, userID, redirectURI, scope, codeChallenge, codeChallengeMethod)
+func (m *MockAuthService) GenerateAuthorizationCode(ctx context.Context, tenantID, clientID, userID uuid.UUID, redirectURI, scope, codeChallenge, codeChallengeMethod, nonce string) (*models.AuthorizationCode, error) {
+	args := m.Called(ctx, tenantID, clientID, userID, redirectURI, scope, codeChallenge, codeChallengeMethod, nonce)
 	return args.Get(0).(*models.AuthorizationCode), args.Error(1)
 }
 
@@ -254,9 +255,22 @@ func (m *MockAuthService) ValidatePKCE(codeVerifier, codeChallenge, method strin
 	return args.Bool(0)
 }
 
-func (m *MockAuthService) GenerateIDToken(ctx context.Context, user *models.User, clientID string) (string, error) {
-	args := m.Called(ctx, user, clientID)
+func (m *MockAuthService) GenerateIDToken(ctx context.Context, user *models.User, clientID, nonce, accessToken string, authTime time.Time) (string, error) {
+	args := m.Called(ctx, user, clientID, nonce, accessToken, authTime)
 	return args.String(0), args.Error(1)
+}
+
+func (m *MockAuthService) GetJWKS(ctx context.Context) (*models.JWKS, error) {
+	args := m.Called(ctx)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*models.JWKS), args.Error(1)
+}
+
+func (m *MockAuthService) RotateSigningKey(ctx context.Context) error {
+	args := m.Called(ctx)
+	return args.Error(0)
 }
 
 func (m *MockAuthService) GetUserInfo(ctx context.Context, tenantID uuid.UUID, accessToken string) (*models.UserInfo, error) {
@@ -413,7 +427,7 @@ func TestOAuthHandler_HandleLogin_Success(t *testing.T) {
 	mockClientService.On("GetByClientID", mock.Anything, tenantID, clientID).Return(client, nil)
 	mockClientService.On("ValidateRedirectURI", mock.Anything, mock.AnythingOfType("*models.Client"), redirectURI).Return(nil)
 	mockTenantService.On("GetByID", mock.Anything, tenantID).Return(tenant, nil)
-	mockAuthService.On("GenerateAuthorizationCode", mock.Anything, tenantID, clientUUID, userID, redirectURI, "read", "test-challenge", "S256").Return(authCode, nil)
+	mockAuthService.On("GenerateAuthorizationCode", mock.Anything, tenantID, clientUUID, userID, redirectURI, "read", "test-challenge", "S256", "test-nonce").Return(authCode, nil)
 
 	// Setup router (templates needed for the authorize step that issues the CSRF token)
 	router := gin.New()
@@ -451,6 +465,7 @@ func TestOAuthHandler_HandleLogin_Success(t *testing.T) {
 	formData.Set("state", "xyz")
 	formData.Set("code_challenge", "test-challenge")
 	formData.Set("code_challenge_method", "S256")
+	formData.Set("nonce", "test-nonce")
 	formData.Set("csrf_token", csrfToken)
 
 	req := httptest.NewRequest("POST", "/oauth/login", strings.NewReader(formData.Encode()))

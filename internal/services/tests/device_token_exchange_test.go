@@ -15,7 +15,6 @@ import (
 
 	"shieldgate/internal/models"
 	"shieldgate/internal/services"
-	"shieldgate/tests/utils"
 )
 
 func deviceClient(tenantID uuid.UUID) *models.Client {
@@ -198,11 +197,9 @@ func TestExchangeToken_HappyPath_DelegationWithActClaim(t *testing.T) {
 	assert.Equal(t, "read", result.Scope)
 
 	// The issued token keeps the original subject and records the actor
-	cfg := utils.CreateTestConfig()
+	// (signature already covered by ValidateAccessToken below)
 	claims := &models.JWTClaims{}
-	_, err = jwt.ParseWithClaims(result.AccessToken, claims, func(t *jwt.Token) (interface{}, error) {
-		return []byte(cfg.JWTSecret), nil
-	})
+	_, _, err = jwt.NewParser().ParseUnverified(result.AccessToken, claims)
 	require.NoError(t, err)
 	assert.Equal(t, userID.String(), claims.Sub, "subject must remain the original user")
 	require.NotNil(t, claims.Act, "act claim must record the acting client")

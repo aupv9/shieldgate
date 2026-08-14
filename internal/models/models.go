@@ -51,6 +51,11 @@ var (
 	ErrSlowDown             = errors.New("polling too frequently")
 	ErrExpiredDeviceCode    = errors.New("device code expired")
 	ErrDeviceAccessDenied   = errors.New("access denied by user")
+	// Signing key errors
+	ErrSigningKeyNotFound = errors.New("signing key not found")
+	// Session errors
+	ErrSessionNotFound = errors.New("session not found")
+	ErrSessionExpired  = errors.New("session expired")
 )
 
 // Error codes for API responses
@@ -235,6 +240,8 @@ type AuthorizationCode struct {
 	Scope               string     `json:"scope" gorm:"type:text"`
 	CodeChallenge       string     `json:"code_challenge" gorm:"size:255"`
 	CodeChallengeMethod string     `json:"code_challenge_method" gorm:"size:50"`
+	Nonce               string     `json:"nonce" gorm:"size:255"`
+	AuthTime            *time.Time `json:"auth_time"`
 	UsedAt              *time.Time `json:"used_at"`
 	ExpiresAt           time.Time  `json:"expires_at" gorm:"not null;index"`
 	CreatedAt           time.Time  `json:"created_at" gorm:"autoCreateTime"`
@@ -365,28 +372,68 @@ type IntrospectionResponse struct {
 	Iat      int64  `json:"iat,omitempty"`
 }
 
-// UserInfo represents OpenID Connect UserInfo response
+// UserInfo represents OpenID Connect UserInfo response.
+// Claims are populated according to the granted scopes (profile, email).
 type UserInfo struct {
-	Sub           string `json:"sub"`
-	Name          string `json:"name,omitempty"`
-	Email         string `json:"email,omitempty"`
-	EmailVerified bool   `json:"email_verified,omitempty"`
+	Sub               string `json:"sub"`
+	Name              string `json:"name,omitempty"`
+	GivenName         string `json:"given_name,omitempty"`
+	FamilyName        string `json:"family_name,omitempty"`
+	PreferredUsername string `json:"preferred_username,omitempty"`
+	Locale            string `json:"locale,omitempty"`
+	Zoneinfo          string `json:"zoneinfo,omitempty"`
+	Email             string `json:"email,omitempty"`
+	EmailVerified     bool   `json:"email_verified,omitempty"`
 }
 
 // OpenIDConfiguration represents OpenID Provider configuration
 type OpenIDConfiguration struct {
-	Issuer                           string   `json:"issuer"`
-	AuthorizationEndpoint            string   `json:"authorization_endpoint"`
-	TokenEndpoint                    string   `json:"token_endpoint"`
-	UserInfoEndpoint                 string   `json:"userinfo_endpoint"`
-	JwksURI                          string   `json:"jwks_uri"`
-	DeviceAuthorizationEndpoint      string   `json:"device_authorization_endpoint,omitempty"`
-	ResponseTypesSupported           []string `json:"response_types_supported"`
-	GrantTypesSupported              []string `json:"grant_types_supported,omitempty"`
-	SubjectTypesSupported            []string `json:"subject_types_supported"`
-	IDTokenSigningAlgValuesSupported []string `json:"id_token_signing_alg_values_supported"`
-	ScopesSupported                  []string `json:"scopes_supported"`
-	ClaimsSupported                  []string `json:"claims_supported"`
+	Issuer                            string   `json:"issuer"`
+	AuthorizationEndpoint             string   `json:"authorization_endpoint"`
+	TokenEndpoint                     string   `json:"token_endpoint"`
+	UserInfoEndpoint                  string   `json:"userinfo_endpoint"`
+	JwksURI                           string   `json:"jwks_uri"`
+	DeviceAuthorizationEndpoint       string   `json:"device_authorization_endpoint,omitempty"`
+	RevocationEndpoint                string   `json:"revocation_endpoint,omitempty"`
+	IntrospectionEndpoint             string   `json:"introspection_endpoint,omitempty"`
+	EndSessionEndpoint                string   `json:"end_session_endpoint,omitempty"`
+	RegistrationEndpoint              string   `json:"registration_endpoint,omitempty"`
+	ResponseTypesSupported            []string `json:"response_types_supported"`
+	GrantTypesSupported               []string `json:"grant_types_supported,omitempty"`
+	SubjectTypesSupported             []string `json:"subject_types_supported"`
+	IDTokenSigningAlgValuesSupported  []string `json:"id_token_signing_alg_values_supported"`
+	TokenEndpointAuthMethodsSupported []string `json:"token_endpoint_auth_methods_supported,omitempty"`
+	CodeChallengeMethodsSupported     []string `json:"code_challenge_methods_supported,omitempty"`
+	ScopesSupported                   []string `json:"scopes_supported"`
+	ClaimsSupported                   []string `json:"claims_supported"`
+}
+
+// SigningKey stores an asymmetric token-signing key. The private key stays
+// server-side; the public half is published via JWKS. Retired keys keep
+// verifying old tokens until they are removed.
+type SigningKey struct {
+	ID            uuid.UUID  `json:"id" gorm:"type:uuid;primary_key;default:gen_random_uuid()"`
+	KID           string     `json:"kid" gorm:"not null;size:64;uniqueIndex"`
+	Algorithm     string     `json:"algorithm" gorm:"not null;size:20"`
+	PrivateKeyPEM string     `json:"-" gorm:"type:text;not null"`
+	IsActive      bool       `json:"is_active" gorm:"not null;default:false;index"`
+	CreatedAt     time.Time  `json:"created_at" gorm:"autoCreateTime"`
+	RetiredAt     *time.Time `json:"retired_at"`
+}
+
+// JWK is a JSON Web Key (public part only, RFC 7517)
+type JWK struct {
+	Kty string `json:"kty"`
+	Use string `json:"use"`
+	Alg string `json:"alg"`
+	Kid string `json:"kid"`
+	N   string `json:"n,omitempty"`
+	E   string `json:"e,omitempty"`
+}
+
+// JWKS is a JSON Web Key Set (RFC 7517)
+type JWKS struct {
+	Keys []JWK `json:"keys"`
 }
 
 // ActorClaim identifies the acting party in a delegation scenario
@@ -409,6 +456,11 @@ type JWTClaims struct {
 	Email    string      `json:"email,omitempty"`
 	Name     string      `json:"name,omitempty"`
 	Act      *ActorClaim `json:"act,omitempty"`
+	// OpenID Connect claims
+	Nonce    string   `json:"nonce,omitempty"`
+	AuthTime int64    `json:"auth_time,omitempty"`
+	AtHash   string   `json:"at_hash,omitempty"`
+	AMR      []string `json:"amr,omitempty"`
 }
 
 // GetExpirationTime implements jwt.Claims interface

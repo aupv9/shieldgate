@@ -45,7 +45,12 @@ func newOIDCRouter(
 // --- HandleJWKS ---
 
 func TestHandleJWKS_ReturnsWellFormedJWK(t *testing.T) {
-	r := newOIDCRouter(new(MockTenantService), new(MockUserService), new(MockClientService), new(MockAuthService))
+	mockAuth := new(MockAuthService)
+	mockAuth.On("GetJWKS", mock.Anything).Return(&models.JWKS{Keys: []models.JWK{
+		{Kty: "RSA", Use: "sig", Alg: "RS256", Kid: "key-1", N: "modulus", E: "AQAB"},
+	}}, nil)
+
+	r := newOIDCRouter(new(MockTenantService), new(MockUserService), new(MockClientService), mockAuth)
 
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil)
@@ -62,10 +67,12 @@ func TestHandleJWKS_ReturnsWellFormedJWK(t *testing.T) {
 
 	key, ok := keys[0].(map[string]interface{})
 	require.True(t, ok)
-	assert.Equal(t, "oct", key["kty"])
+	assert.Equal(t, "RSA", key["kty"])
 	assert.Equal(t, "sig", key["use"])
-	assert.Equal(t, "HS256", key["alg"])
+	assert.Equal(t, "RS256", key["alg"])
 	assert.NotEmpty(t, key["kid"])
+	assert.NotEmpty(t, key["n"])
+	assert.NotEmpty(t, key["e"])
 }
 
 // --- HandleDiscovery ---

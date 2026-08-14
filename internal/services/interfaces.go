@@ -66,7 +66,7 @@ type ClientService interface {
 // AuthService defines the interface for OAuth authentication business logic
 type AuthService interface {
 	// Authorization Code Flow
-	GenerateAuthorizationCode(ctx context.Context, tenantID, clientID, userID uuid.UUID, redirectURI, scope, codeChallenge, codeChallengeMethod string) (*models.AuthorizationCode, error)
+	GenerateAuthorizationCode(ctx context.Context, tenantID, clientID, userID uuid.UUID, redirectURI, scope, codeChallenge, codeChallengeMethod, nonce string) (*models.AuthorizationCode, error)
 	ExchangeAuthorizationCode(ctx context.Context, tenantID uuid.UUID, code, clientID, clientSecret, redirectURI, codeVerifier string) (*models.TokenResponse, error)
 
 	// Token Management
@@ -105,9 +105,17 @@ type AuthService interface {
 	ValidatePKCE(codeVerifier, codeChallenge, method string) bool
 
 	// OpenID Connect
-	GenerateIDToken(ctx context.Context, user *models.User, clientID string) (string, error)
+	// GenerateIDToken issues an ID token with nonce, at_hash (bound to
+	// accessToken when non-empty) and auth_time (when non-zero)
+	GenerateIDToken(ctx context.Context, user *models.User, clientID, nonce, accessToken string, authTime time.Time) (string, error)
 	GetUserInfo(ctx context.Context, tenantID uuid.UUID, accessToken string) (*models.UserInfo, error)
 	GetDiscoveryDocument(ctx context.Context) (*models.OpenIDConfiguration, error)
+
+	// Signing keys (RS256 + JWKS)
+	GetJWKS(ctx context.Context) (*models.JWKS, error)
+	// RotateSigningKey promotes a new signing key; the previous key keeps
+	// verifying already-issued tokens until retired
+	RotateSigningKey(ctx context.Context) error
 
 	// Cleanup
 	CleanupExpiredTokens(ctx context.Context) error

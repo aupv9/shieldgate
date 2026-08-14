@@ -3,10 +3,12 @@ package services
 import (
 	"context"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
+	"sync"
 	"time"
 
 	"shieldgate/config"
@@ -22,6 +24,11 @@ type authServiceImpl struct {
 	repos  *repo.Repositories
 	config *config.Config
 	logger *logrus.Logger
+
+	// signing key cache (see signing_keys.go)
+	keyMu      sync.RWMutex
+	activeKey  *cachedSigningKey
+	verifyKeys map[string]*rsa.PublicKey
 }
 
 // NewAuthService creates a new auth service implementation
@@ -40,7 +47,7 @@ func hashToken(token string) string {
 	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
-func (s *authServiceImpl) GenerateAuthorizationCode(ctx context.Context, tenantID, clientID, userID uuid.UUID, redirectURI, scope, codeChallenge, codeChallengeMethod string) (*models.AuthorizationCode, error) {
+func (s *authServiceImpl) GenerateAuthorizationCode(ctx context.Context, tenantID, clientID, userID uuid.UUID, redirectURI, scope, codeChallenge, codeChallengeMethod, nonce string) (*models.AuthorizationCode, error) {
 	// Generate random code
 	code, err := s.generateRandomString(32)
 	if err != nil {
@@ -48,6 +55,7 @@ func (s *authServiceImpl) GenerateAuthorizationCode(ctx context.Context, tenantI
 	}
 
 	// Create authorization code
+	now := time.Now()
 	authCode := &models.AuthorizationCode{
 		ID:                  uuid.New(),
 		TenantID:            tenantID,
@@ -58,7 +66,9 @@ func (s *authServiceImpl) GenerateAuthorizationCode(ctx context.Context, tenantI
 		Scope:               scope,
 		CodeChallenge:       codeChallenge,
 		CodeChallengeMethod: codeChallengeMethod,
-		ExpiresAt:           time.Now().Add(s.config.AuthorizationCodeDuration),
+		Nonce:               nonce,
+		AuthTime:            &now,
+		ExpiresAt:           now.Add(s.config.AuthorizationCodeDuration),
 	}
 
 	if err := s.repos.AuthCode.Create(ctx, authCode); err != nil {
@@ -120,7 +130,11 @@ func (s *authServiceImpl) ExchangeAuthorizationCode(ctx context.Context, tenantI
 
 	// Generate tokens; the family is keyed by the authorization code so a
 	// later code replay can revoke everything issued from it
-	tokenResponse, err := s.issueTokens(ctx, tenantID, authCode.ClientID, authCode.UserID, authCode.Scope, authCode.ID, true, true)
+	authTime := authCode.CreatedAt
+	if authCode.AuthTime != nil {
+		authTime = *authCode.AuthTime
+	}
+	tokenResponse, err := s.issueTokensWithIDContext(ctx, tenantID, authCode.ClientID, authCode.UserID, authCode.Scope, authCode.ID, true, true, authCode.Nonce, authTime)
 	if err != nil {
 		return nil, err
 	}
@@ -141,7 +155,7 @@ func (s *authServiceImpl) GenerateTokens(ctx context.Context, tenantID, clientID
 func (s *authServiceImpl) GenerateClientCredentialsTokens(ctx context.Context, tenantID uuid.UUID, client *models.Client, scope string) (*models.TokenResponse, error) {
 	// RFC 6749 §4.4.3: no refresh token for the client credentials grant.
 	// The subject of the token is the client itself.
-	accessToken, err := s.generateJWTWithSubject(client.ID.String(), tenantID, client.ID, uuid.Nil, scope, s.config.AccessTokenDuration)
+	accessToken, err := s.generateJWTWithSubject(ctx, client.ID.String(), tenantID, client.ID, uuid.Nil, scope, s.config.AccessTokenDuration)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate access token: %w", err)
 	}
@@ -171,8 +185,14 @@ func (s *authServiceImpl) GenerateClientCredentialsTokens(ctx context.Context, t
 // issueTokens creates an access token (and optionally a refresh token) within
 // the given rotation family. Only token hashes are persisted.
 func (s *authServiceImpl) issueTokens(ctx context.Context, tenantID, clientID, userID uuid.UUID, scope string, familyID uuid.UUID, includeRefreshToken, includeIDToken bool) (*models.TokenResponse, error) {
+	return s.issueTokensWithIDContext(ctx, tenantID, clientID, userID, scope, familyID, includeRefreshToken, includeIDToken, "", time.Time{})
+}
+
+// issueTokensWithIDContext additionally threads the OIDC nonce and auth_time
+// into the ID token when one is issued
+func (s *authServiceImpl) issueTokensWithIDContext(ctx context.Context, tenantID, clientID, userID uuid.UUID, scope string, familyID uuid.UUID, includeRefreshToken, includeIDToken bool, nonce string, authTime time.Time) (*models.TokenResponse, error) {
 	// Generate access token
-	accessToken, err := s.generateJWT(tenantID, clientID, userID, scope, s.config.AccessTokenDuration)
+	accessToken, err := s.generateJWT(ctx, tenantID, clientID, userID, scope, s.config.AccessTokenDuration)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate access token: %w", err)
 	}
@@ -225,7 +245,7 @@ func (s *authServiceImpl) issueTokens(ctx context.Context, tenantID, clientID, u
 	if includeIDToken && ScopeContains(scope, "openid") {
 		user, err := s.repos.User.GetByID(ctx, tenantID, userID)
 		if err == nil {
-			idToken, err := s.GenerateIDToken(ctx, user, clientID.String())
+			idToken, err := s.GenerateIDToken(ctx, user, clientID.String(), nonce, accessToken, authTime)
 			if err == nil {
 				response.IDToken = idToken
 			}
@@ -355,12 +375,7 @@ func (s *authServiceImpl) IntrospectToken(ctx context.Context, tenantID uuid.UUI
 }
 
 func (s *authServiceImpl) ValidateAccessToken(ctx context.Context, tenantID uuid.UUID, tokenString string) (*models.JWTClaims, error) {
-	token, err := jwt.ParseWithClaims(tokenString, &models.JWTClaims{}, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-		}
-		return []byte(s.config.JWTSecret), nil
-	})
+	token, err := jwt.ParseWithClaims(tokenString, &models.JWTClaims{}, s.verificationKeyfunc(ctx))
 
 	if err != nil {
 		return nil, err
@@ -400,20 +415,42 @@ func (s *authServiceImpl) ValidatePKCE(codeVerifier, codeChallenge, method strin
 	return subtle.ConstantTimeCompare([]byte(computed), []byte(codeChallenge)) == 1
 }
 
-func (s *authServiceImpl) GenerateIDToken(ctx context.Context, user *models.User, clientID string) (string, error) {
+// GenerateIDToken builds an OIDC ID token: nonce is echoed back for replay
+// protection (OIDC Core §3.1.3.7), at_hash binds the ID token to its access
+// token (§3.1.3.6), auth_time records when the user actually authenticated.
+func (s *authServiceImpl) GenerateIDToken(ctx context.Context, user *models.User, clientID, nonce, accessToken string, authTime time.Time) (string, error) {
+	duration := s.config.IDTokenDuration
+	if duration <= 0 {
+		duration = time.Hour
+	}
+
+	now := time.Now()
 	claims := &models.JWTClaims{
 		Sub:      user.ID.String(),
 		Aud:      clientID,
 		Iss:      s.config.ServerURL,
-		Exp:      time.Now().Add(1 * time.Hour).Unix(),
-		Iat:      time.Now().Unix(),
+		Exp:      now.Add(duration).Unix(),
+		Iat:      now.Unix(),
 		TenantID: user.TenantID.String(),
 		Email:    user.Email,
-		Name:     user.Username,
+		Name:     user.GetFullName(),
+		Nonce:    nonce,
+	}
+	if !authTime.IsZero() {
+		claims.AuthTime = authTime.Unix()
+	}
+	if accessToken != "" {
+		claims.AtHash = computeAtHash(accessToken)
 	}
 
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString([]byte(s.config.JWTSecret))
+	return s.signToken(ctx, claims)
+}
+
+// computeAtHash implements the OIDC at_hash: base64url of the left half of
+// the SHA-256 digest of the access token (for RS256/HS256-signed tokens)
+func computeAtHash(accessToken string) string {
+	sum := sha256.Sum256([]byte(accessToken))
+	return base64.RawURLEncoding.EncodeToString(sum[:16])
 }
 
 func (s *authServiceImpl) GetUserInfo(ctx context.Context, tenantID uuid.UUID, accessToken string) (*models.UserInfo, error) {
@@ -434,15 +471,30 @@ func (s *authServiceImpl) GetUserInfo(ctx context.Context, tenantID uuid.UUID, a
 		return nil, err
 	}
 
-	return &models.UserInfo{
-		Sub:           user.ID.String(),
-		Name:          user.Username,
-		Email:         user.Email,
-		EmailVerified: user.EmailVerified,
-	}, nil
+	// Release claims according to the scopes granted to the access token
+	// (OIDC Core §5.4)
+	info := &models.UserInfo{Sub: user.ID.String()}
+	if ScopeContains(claims.Scope, "profile") {
+		info.Name = user.GetFullName()
+		info.GivenName = user.FirstName
+		info.FamilyName = user.LastName
+		info.PreferredUsername = user.Username
+		info.Locale = user.Locale
+		info.Zoneinfo = user.Timezone
+	}
+	if ScopeContains(claims.Scope, "email") {
+		info.Email = user.Email
+		info.EmailVerified = user.EmailVerified
+	}
+	return info, nil
 }
 
 func (s *authServiceImpl) GetDiscoveryDocument(ctx context.Context) (*models.OpenIDConfiguration, error) {
+	signingAlgs := []string{"HS256"}
+	if s.signingKeysAvailable() {
+		signingAlgs = []string{"RS256"}
+	}
+
 	return &models.OpenIDConfiguration{
 		Issuer:                      s.config.ServerURL,
 		AuthorizationEndpoint:       s.config.ServerURL + "/oauth/authorize",
@@ -450,6 +502,9 @@ func (s *authServiceImpl) GetDiscoveryDocument(ctx context.Context) (*models.Ope
 		UserInfoEndpoint:            s.config.ServerURL + "/userinfo",
 		JwksURI:                     s.config.ServerURL + "/.well-known/jwks.json",
 		DeviceAuthorizationEndpoint: s.config.ServerURL + "/oauth/device_authorization",
+		RevocationEndpoint:          s.config.ServerURL + "/oauth/revoke",
+		IntrospectionEndpoint:       s.config.ServerURL + "/oauth/introspect",
+		EndSessionEndpoint:          s.config.ServerURL + "/oauth/logout",
 		ResponseTypesSupported:      []string{"code"},
 		GrantTypesSupported: []string{
 			"authorization_code",
@@ -458,10 +513,12 @@ func (s *authServiceImpl) GetDiscoveryDocument(ctx context.Context) (*models.Ope
 			models.GrantTypeDeviceCode,
 			models.GrantTypeTokenExchange,
 		},
-		SubjectTypesSupported:            []string{"public"},
-		IDTokenSigningAlgValuesSupported: []string{"HS256"},
-		ScopesSupported:                  []string{"openid", "profile", "email", "read", "write"},
-		ClaimsSupported:                  []string{"sub", "name", "email", "email_verified"},
+		SubjectTypesSupported:             []string{"public"},
+		IDTokenSigningAlgValuesSupported:  signingAlgs,
+		TokenEndpointAuthMethodsSupported: []string{"client_secret_basic", "client_secret_post"},
+		CodeChallengeMethodsSupported:     []string{"S256"},
+		ScopesSupported:                   []string{"openid", "profile", "email", "read", "write"},
+		ClaimsSupported:                   []string{"sub", "name", "given_name", "family_name", "preferred_username", "locale", "zoneinfo", "email", "email_verified", "auth_time", "nonce"},
 	}, nil
 }
 
@@ -489,11 +546,11 @@ func (s *authServiceImpl) CleanupExpiredTokens(ctx context.Context) error {
 
 // Helper methods
 
-func (s *authServiceImpl) generateJWT(tenantID, clientID, userID uuid.UUID, scope string, duration time.Duration) (string, error) {
-	return s.generateJWTWithSubject(userID.String(), tenantID, clientID, userID, scope, duration)
+func (s *authServiceImpl) generateJWT(ctx context.Context, tenantID, clientID, userID uuid.UUID, scope string, duration time.Duration) (string, error) {
+	return s.generateJWTWithSubject(ctx, userID.String(), tenantID, clientID, userID, scope, duration)
 }
 
-func (s *authServiceImpl) generateJWTWithSubject(subject string, tenantID, clientID, userID uuid.UUID, scope string, duration time.Duration) (string, error) {
+func (s *authServiceImpl) generateJWTWithSubject(ctx context.Context, subject string, tenantID, clientID, userID uuid.UUID, scope string, duration time.Duration) (string, error) {
 	claims := &models.JWTClaims{
 		Sub:      subject,
 		Aud:      clientID.String(),
@@ -508,8 +565,7 @@ func (s *authServiceImpl) generateJWTWithSubject(subject string, tenantID, clien
 		claims.UserID = userID.String()
 	}
 
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString([]byte(s.config.JWTSecret))
+	return s.signToken(ctx, claims)
 }
 
 func (s *authServiceImpl) generateRandomString(length int) (string, error) {

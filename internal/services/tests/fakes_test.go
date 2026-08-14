@@ -389,6 +389,71 @@ func (r *fakeDeviceCodeRepo) Delete(ctx context.Context, tenantID uuid.UUID, dev
 
 func (r *fakeDeviceCodeRepo) DeleteExpired(ctx context.Context) error { return nil }
 
+// --- fakeSigningKeyRepo ---
+
+type fakeSigningKeyRepo struct {
+	mu   sync.Mutex
+	keys []*models.SigningKey
+}
+
+func newFakeSigningKeyRepo() *fakeSigningKeyRepo {
+	return &fakeSigningKeyRepo{}
+}
+
+func (r *fakeSigningKeyRepo) Create(ctx context.Context, key *models.SigningKey) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	stored := *key
+	r.keys = append(r.keys, &stored)
+	return nil
+}
+
+func (r *fakeSigningKeyRepo) GetActive(ctx context.Context) (*models.SigningKey, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := len(r.keys) - 1; i >= 0; i-- {
+		if r.keys[i].IsActive && r.keys[i].RetiredAt == nil {
+			copied := *r.keys[i]
+			return &copied, nil
+		}
+	}
+	return nil, models.ErrSigningKeyNotFound
+}
+
+func (r *fakeSigningKeyRepo) GetByKID(ctx context.Context, kid string) (*models.SigningKey, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, k := range r.keys {
+		if k.KID == kid && k.RetiredAt == nil {
+			copied := *k
+			return &copied, nil
+		}
+	}
+	return nil, models.ErrSigningKeyNotFound
+}
+
+func (r *fakeSigningKeyRepo) ListServing(ctx context.Context) ([]*models.SigningKey, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []*models.SigningKey
+	for _, k := range r.keys {
+		if k.RetiredAt == nil {
+			copied := *k
+			out = append(out, &copied)
+		}
+	}
+	return out, nil
+}
+
+func (r *fakeSigningKeyRepo) DeactivateAll(ctx context.Context) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, k := range r.keys {
+		k.IsActive = false
+	}
+	return nil
+}
+
 // newFakeRepositories wires the fakes into a repo.Repositories aggregate
 func newFakeRepositories() *repo.Repositories {
 	return &repo.Repositories{
@@ -397,6 +462,7 @@ func newFakeRepositories() *repo.Repositories {
 		AccessToken:  newFakeAccessTokenRepo(),
 		RefreshToken: newFakeRefreshTokenRepo(),
 		DeviceCode:   newFakeDeviceCodeRepo(),
+		SigningKey:   newFakeSigningKeyRepo(),
 		User:         newFakeUserRepo(),
 	}
 }
