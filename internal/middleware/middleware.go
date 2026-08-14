@@ -288,6 +288,8 @@ func isOAuthEndpoint(path string) bool {
 		"/oauth/token",
 		"/oauth/introspect",
 		"/oauth/revoke",
+		"/oauth/device", // covers /oauth/device and /oauth/device_authorization
+		"/oauth/login",
 		"/.well-known/openid-configuration",
 		"/.well-known/jwks.json",
 		"/userinfo",

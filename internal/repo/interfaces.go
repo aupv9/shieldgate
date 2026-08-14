@@ -75,6 +75,17 @@ type RefreshTokenRepository interface {
 	DeleteByFamilyID(ctx context.Context, tenantID, familyID uuid.UUID) error
 }
 
+// DeviceCodeRepository defines the interface for device authorization grant
+// data operations (RFC 8628)
+type DeviceCodeRepository interface {
+	Create(ctx context.Context, code *models.DeviceCode) error
+	GetByDeviceCode(ctx context.Context, tenantID uuid.UUID, deviceCode string) (*models.DeviceCode, error)
+	GetByUserCode(ctx context.Context, tenantID uuid.UUID, userCode string) (*models.DeviceCode, error)
+	Update(ctx context.Context, code *models.DeviceCode) error
+	Delete(ctx context.Context, tenantID uuid.UUID, deviceCode string) error
+	DeleteExpired(ctx context.Context) error
+}
+
 // Repositories aggregates all repository interfaces
 type Repositories struct {
 	Tenant            TenantRepository
@@ -83,6 +94,7 @@ type Repositories struct {
 	AuthCode          AuthCodeRepository
 	AccessToken       AccessTokenRepository
 	RefreshToken      RefreshTokenRepository
+	DeviceCode        DeviceCodeRepository
 	Role              RoleRepository
 	Permission        PermissionRepository
 	UserRole          UserRoleRepository

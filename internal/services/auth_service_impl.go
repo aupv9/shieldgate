@@ -444,12 +444,20 @@ func (s *authServiceImpl) GetUserInfo(ctx context.Context, tenantID uuid.UUID, a
 
 func (s *authServiceImpl) GetDiscoveryDocument(ctx context.Context) (*models.OpenIDConfiguration, error) {
 	return &models.OpenIDConfiguration{
-		Issuer:                           s.config.ServerURL,
-		AuthorizationEndpoint:            s.config.ServerURL + "/oauth/authorize",
-		TokenEndpoint:                    s.config.ServerURL + "/oauth/token",
-		UserInfoEndpoint:                 s.config.ServerURL + "/userinfo",
-		JwksURI:                          s.config.ServerURL + "/.well-known/jwks.json",
-		ResponseTypesSupported:           []string{"code"},
+		Issuer:                      s.config.ServerURL,
+		AuthorizationEndpoint:       s.config.ServerURL + "/oauth/authorize",
+		TokenEndpoint:               s.config.ServerURL + "/oauth/token",
+		UserInfoEndpoint:            s.config.ServerURL + "/userinfo",
+		JwksURI:                     s.config.ServerURL + "/.well-known/jwks.json",
+		DeviceAuthorizationEndpoint: s.config.ServerURL + "/oauth/device_authorization",
+		ResponseTypesSupported:      []string{"code"},
+		GrantTypesSupported: []string{
+			"authorization_code",
+			"refresh_token",
+			"client_credentials",
+			models.GrantTypeDeviceCode,
+			models.GrantTypeTokenExchange,
+		},
 		SubjectTypesSupported:            []string{"public"},
 		IDTokenSigningAlgValuesSupported: []string{"HS256"},
 		ScopesSupported:                  []string{"openid", "profile", "email", "read", "write"},
@@ -468,6 +476,12 @@ func (s *authServiceImpl) CleanupExpiredTokens(ctx context.Context) error {
 
 	if err := s.repos.RefreshToken.DeleteExpired(ctx); err != nil {
 		s.logger.WithError(err).Error("failed to cleanup expired refresh tokens")
+	}
+
+	if s.repos.DeviceCode != nil {
+		if err := s.repos.DeviceCode.DeleteExpired(ctx); err != nil {
+			s.logger.WithError(err).Error("failed to cleanup expired device codes")
+		}
 	}
 
 	return nil
