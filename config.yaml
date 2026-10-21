@@ -17,6 +17,12 @@ server:
 # JWT configuration
 jwt:
   secret: "your-super-secret-jwt-key-minimum-32-characters-long"
+  # RS256 (default), ES256, or HS256 (legacy, no JWKS)
+  signing_alg: "RS256"
+  # PEM private key; empty generates an ephemeral key outside release mode
+  signing_key_file: ""
+  # Comma-separated PEM keys accepted for verification during rotation
+  verification_key_files: ""
 
 # Security configuration
 security:

@@ -21,8 +21,12 @@ services:
       - GIN_MODE=release
       - LOG_LEVEL=warn
       - LOG_FORMAT=json
+      # Release mode refuses to start without a signing key (see `make jwt-keys`)
+      - JWT_SIGNING_KEY_FILE=${JWT_SIGNING_KEY_FILE:-/run/secrets/jwt/jwt-signing.pem}
+      - JWT_VERIFICATION_KEY_FILES=${JWT_VERIFICATION_KEY_FILES:-}
     volumes:
       - ./logs:/app/logs
+      - ./secrets:/run/secrets/jwt:ro
     networks:
       - shieldgate-network
       - traefik-network

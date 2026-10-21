@@ -20,6 +20,7 @@ import (
 	"shieldgate/config"
 	"shieldgate/internal/database"
 	"shieldgate/internal/handlers"
+	"shieldgate/internal/jwtkeys"
 	"shieldgate/internal/middleware"
 	gormrepo "shieldgate/internal/repo/gorm"
 	"shieldgate/internal/services"
@@ -70,6 +71,26 @@ func main() {
 		}
 	}
 
+	// Load JWT signing keys. Outside release mode a missing key file falls
+	// back to a throwaway key so local development works out of the box.
+	jwtKeys, ephemeralKey, err := jwtkeys.Load(jwtkeys.Options{
+		Alg:                  cfg.JWTSigningAlg,
+		SigningKeyFile:       cfg.JWTSigningKeyFile,
+		VerificationKeyFiles: cfg.JWTVerificationKeyFiles,
+		HMACSecret:           cfg.JWTSecret,
+		AllowEphemeral:       cfg.GinMode != gin.ReleaseMode,
+	})
+	if err != nil {
+		logger.Fatalf("Failed to load JWT signing keys: %v", err)
+	}
+	if ephemeralKey {
+		logger.Warn("No JWT_SIGNING_KEY_FILE set: using an ephemeral signing key; tokens will not survive a restart or verify across replicas")
+	}
+	logger.WithFields(logrus.Fields{
+		"alg": jwtKeys.Algorithm(),
+		"kid": jwtKeys.ActiveKeyID(),
+	}).Info("JWT signing key loaded")
+
 	// Initialize repositories
 	repos := gormrepo.NewRepositories(db)
 
@@ -88,7 +109,7 @@ func main() {
 	tenantService := services.NewTenantService(repos, logger)
 	userService := services.NewUserService(repos, logger)
 	clientService := services.NewClientService(repos, logger)
-	authService := services.NewAuthService(repos, cfg, logger)
+	authService := services.NewAuthService(repos, cfg, jwtKeys, logger)
 	roleService := services.NewRoleService(repos.Role, repos.Permission, repos.UserRole, repos.RolePermission, auditService, logger)
 	permissionService := services.NewPermissionService(repos.Permission, repos.Role, repos.UserRole, repos.RolePermission, logger)
 
@@ -122,7 +143,7 @@ func main() {
 	router.Use(gin.Recovery())
 	router.Use(middleware.CORS(cfg))
 	router.Use(middleware.RateLimit(cfg))
-	router.Use(middleware.TenantContext(cfg))
+	router.Use(middleware.TenantContext(jwtKeys))
 	router.Use(middleware.RequestID())
 
 	// Initialize authorization
@@ -144,7 +165,7 @@ func main() {
 	auditHandler := handlers.NewAuditHandler(auditService, logger)
 
 	// Setup routes
-	setupRoutes(cfg, db, redisClient, router, tenantHandler, userHandler, clientHandler, oauthHandler, rbacHandler, auditHandler, authService, authz)
+	setupRoutes(cfg, db, redisClient, router, tenantHandler, userHandler, clientHandler, oauthHandler, rbacHandler, auditHandler, authService, authz, jwtKeys)
 
 	// Create HTTP server
 	server := &http.Server{
@@ -221,6 +242,7 @@ func setupRoutes(
 	auditHandler *handlers.AuditHandler,
 	authService services.AuthService,
 	authz *middleware.Authorizer,
+	jwtKeys *jwtkeys.KeySet,
 ) {
 	// Health check endpoint
 	router.GET("/health", func(c *gin.Context) {
@@ -268,7 +290,7 @@ func setupRoutes(
 
 	// Management API endpoints (versioned)
 	api := router.Group("/v1")
-	api.Use(middleware.RequireAuth(cfg, authService)) // Require authentication + revocation check for management APIs
+	api.Use(middleware.RequireAuth(jwtKeys, authService)) // Require authentication + revocation check for management APIs
 	{
 		// Every route below adds its own RBAC check via authz
 

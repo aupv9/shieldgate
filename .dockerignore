@@ -1,0 +1,2 @@
+# Never bake signing keys into the image; mount them at runtime
+secrets/

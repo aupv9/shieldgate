@@ -61,13 +61,13 @@
 
 Bổ sung ngoài kế hoạch: PKCE compare dùng constant-time; `email_verified` trong UserInfo lấy từ user record thay vì hardcode; fix panic khi render login page với client nil.
 
-### Phase 2 — OIDC Compliance (~2 tuần)
+### Phase 2 — OIDC Compliance (~2 tuần) — 🚧 đang làm (2.1, 2.2 xong 2026-10-21)
 > Mục tiêu: pass được OIDC conformance test cơ bản (basic certification profile).
 
 | Task | Gaps | Việc cụ thể |
 |------|------|-------------|
-| 2.1 Ký bất đối xứng RS256/ES256 | G4 | Key pair per-server (config/KMS), header `kid`; giữ HS256 làm fallback config được. |
-| 2.2 JWKS thật + key rotation | G4, G20 | Publish public key qua `/.well-known/jwks.json`; hỗ trợ ≥2 key đồng thời (current + next) để rotate không downtime. |
+| 2.1 Ký bất đối xứng RS256/ES256 | G4 | ✅ `internal/jwtkeys`: RS256 mặc định, ES256, HS256 fallback qua `JWT_SIGNING_ALG`; key PEM từ `JWT_SIGNING_KEY_FILE` (release mode bắt buộc, dev tự sinh key tạm); `kid` = RFC 7638 thumbprint; chọn key theo `kid` + khớp `alg` (chặn alg-confusion). |
+| 2.2 JWKS thật + key rotation | G4, G20 | ✅ `/.well-known/jwks.json` publish public key (RSA/EC, không bao giờ lộ secret HS256), `Cache-Control: max-age=900`; `JWT_VERIFICATION_KEY_FILES` cho key next/previous → rotate không downtime; `make jwt-keys`. |
 | 2.3 Nonce end-to-end | G5 | Thêm cột `nonce` vào `authorization_codes`; đưa vào ID token claims. |
 | 2.4 ID token đầy đủ claims | G16 | `auth_time`, `at_hash`, expiry theo config; audience validation. |
 | 2.5 UserInfo theo scope | G17 | Trả claims tương ứng scope `profile`/`email`; `email_verified` lấy từ user record. |

@@ -22,8 +22,12 @@ type Config struct {
 	Port      string
 	GinMode   string
 
-	// JWT
-	JWTSecret string
+	// JWT. JWTSecret also keys the CSRF cookie HMAC, so it is required
+	// even when tokens are signed with RS256/ES256.
+	JWTSecret               string
+	JWTSigningAlg           string
+	JWTSigningKeyFile       string
+	JWTVerificationKeyFiles string
 
 	// Security
 	BcryptCost                int
@@ -81,6 +85,9 @@ func Load() (*Config, error) {
 	viper.BindEnv("server.port", "PORT")
 	viper.BindEnv("server.gin_mode", "GIN_MODE")
 	viper.BindEnv("jwt.secret", "JWT_SECRET")
+	viper.BindEnv("jwt.signing_alg", "JWT_SIGNING_ALG")
+	viper.BindEnv("jwt.signing_key_file", "JWT_SIGNING_KEY_FILE")
+	viper.BindEnv("jwt.verification_key_files", "JWT_VERIFICATION_KEY_FILES")
 	viper.BindEnv("security.bcrypt_cost", "BCRYPT_COST")
 	viper.BindEnv("security.access_token_duration", "ACCESS_TOKEN_DURATION")
 	viper.BindEnv("security.refresh_token_duration", "REFRESH_TOKEN_DURATION")
@@ -128,7 +135,10 @@ func Load() (*Config, error) {
 		GinMode:   viper.GetString("server.gin_mode"),
 
 		// JWT
-		JWTSecret: viper.GetString("jwt.secret"),
+		JWTSecret:               viper.GetString("jwt.secret"),
+		JWTSigningAlg:           viper.GetString("jwt.signing_alg"),
+		JWTSigningKeyFile:       viper.GetString("jwt.signing_key_file"),
+		JWTVerificationKeyFiles: viper.GetString("jwt.verification_key_files"),
 
 		// Security
 		BcryptCost:                viper.GetInt("security.bcrypt_cost"),
@@ -179,6 +189,9 @@ func setDefaults() {
 
 	// JWT defaults
 	viper.SetDefault("jwt.secret", "your-super-secret-jwt-key-minimum-32-characters-long")
+	viper.SetDefault("jwt.signing_alg", "RS256")
+	viper.SetDefault("jwt.signing_key_file", "")
+	viper.SetDefault("jwt.verification_key_files", "")
 
 	// Security defaults
 	viper.SetDefault("security.bcrypt_cost", 12)
