@@ -28,12 +28,12 @@ func NewClientHandler(clientService services.ClientService, logger *logrus.Logge
 }
 
 // RegisterRoutes registers client management routes
-func (h *ClientHandler) RegisterRoutes(router *gin.RouterGroup) {
-	router.POST("", h.CreateClient)
-	router.GET("/:client_id", h.GetClient)
-	router.PUT("/:client_id", h.UpdateClient)
-	router.DELETE("/:client_id", h.DeleteClient)
-	router.GET("", h.ListClients)
+func (h *ClientHandler) RegisterRoutes(router *gin.RouterGroup, authz *middleware.Authorizer) {
+	router.POST("", authz.Require("client", "create"), h.CreateClient)
+	router.GET("/:client_id", authz.Require("client", "read"), h.GetClient)
+	router.PUT("/:client_id", authz.Require("client", "update"), h.UpdateClient)
+	router.DELETE("/:client_id", authz.Require("client", "delete"), h.DeleteClient)
+	router.GET("", authz.Require("client", "read"), h.ListClients)
 }
 
 // CreateClient handles POST /v1/clients
