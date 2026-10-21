@@ -105,8 +105,10 @@ func (s *authServiceImpl) CreateDeviceAuthorization(ctx context.Context, tenantI
 
 func (s *authServiceImpl) ApproveDeviceCode(ctx context.Context, tenantID uuid.UUID, userCode string, userID uuid.UUID) error {
 	return s.resolveDeviceCode(ctx, tenantID, userCode, func(dc *models.DeviceCode) {
+		now := time.Now()
 		dc.Status = models.DeviceCodeApproved
 		dc.UserID = &userID
+		dc.AuthTime = &now
 	})
 }
 
@@ -173,7 +175,7 @@ func (s *authServiceImpl) ExchangeDeviceCode(ctx context.Context, tenantID uuid.
 		if err := s.repos.DeviceCode.Delete(ctx, tenantID, dc.DeviceCode); err != nil {
 			return nil, models.ErrInvalidGrant
 		}
-		tokens, err := s.issueTokens(ctx, tenantID, dc.ClientID, *dc.UserID, dc.Scope, dc.ID, true, true)
+		tokens, err := s.issueTokens(ctx, tenantID, dc.ClientID, *dc.UserID, dc.Scope, dc.ID, true, true, authContext{authTime: dc.AuthTime})
 		if err != nil {
 			return nil, err
 		}
@@ -217,6 +219,7 @@ func (s *authServiceImpl) ExchangeToken(ctx context.Context, tenantID uuid.UUID,
 	// party is recorded in the act claim (RFC 8693 §4.1)
 	now := time.Now()
 	claims := &models.JWTClaims{
+		Jti:      uuid.NewString(),
 		Sub:      subjectClaims.Sub,
 		Aud:      client.ID.String(),
 		Iss:      s.config.ServerURL,

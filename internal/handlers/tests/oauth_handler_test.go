@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -173,8 +174,8 @@ type MockAuthService struct {
 	mock.Mock
 }
 
-func (m *MockAuthService) GenerateAuthorizationCode(ctx context.Context, tenantID, clientID, userID uuid.UUID, redirectURI, scope, codeChallenge, codeChallengeMethod string) (*models.AuthorizationCode, error) {
-	args := m.Called(ctx, tenantID, clientID, userID, redirectURI, scope, codeChallenge, codeChallengeMethod)
+func (m *MockAuthService) GenerateAuthorizationCode(ctx context.Context, tenantID, clientID, userID uuid.UUID, redirectURI, scope, codeChallenge, codeChallengeMethod, nonce string, authTime time.Time) (*models.AuthorizationCode, error) {
+	args := m.Called(ctx, tenantID, clientID, userID, redirectURI, scope, codeChallenge, codeChallengeMethod, nonce, authTime)
 	return args.Get(0).(*models.AuthorizationCode), args.Error(1)
 }
 
@@ -255,8 +256,8 @@ func (m *MockAuthService) ValidatePKCE(codeVerifier, codeChallenge, method strin
 	return args.Bool(0)
 }
 
-func (m *MockAuthService) GenerateIDToken(ctx context.Context, user *models.User, clientID string) (string, error) {
-	args := m.Called(ctx, user, clientID)
+func (m *MockAuthService) GenerateIDToken(ctx context.Context, user *models.User, params *models.IDTokenParams) (string, error) {
+	args := m.Called(ctx, user, params)
 	return args.String(0), args.Error(1)
 }
 
@@ -419,7 +420,7 @@ func TestOAuthHandler_HandleLogin_Success(t *testing.T) {
 	mockClientService.On("GetByClientID", mock.Anything, tenantID, clientID).Return(client, nil)
 	mockClientService.On("ValidateRedirectURI", mock.Anything, mock.AnythingOfType("*models.Client"), redirectURI).Return(nil)
 	mockTenantService.On("GetByID", mock.Anything, tenantID).Return(tenant, nil)
-	mockAuthService.On("GenerateAuthorizationCode", mock.Anything, tenantID, clientUUID, userID, redirectURI, "read", "test-challenge", "S256").Return(authCode, nil)
+	mockAuthService.On("GenerateAuthorizationCode", mock.Anything, tenantID, clientUUID, userID, redirectURI, "read", "test-challenge", "S256", "", mock.AnythingOfType("time.Time")).Return(authCode, nil)
 
 	// Setup router (templates needed for the authorize step that issues the CSRF token)
 	router := gin.New()
@@ -527,7 +528,7 @@ func TestOAuthHandler_HandleLogin_MissingCSRFToken_Rejected(t *testing.T) {
 	// Without a CSRF token no credentials are checked and no code is issued
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	mockUserService.AssertNotCalled(t, "Authenticate", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
-	mockAuthService.AssertNotCalled(t, "GenerateAuthorizationCode", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+	mockAuthService.AssertNotCalled(t, "GenerateAuthorizationCode", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 }
 
 // extractCSRFToken pulls the hidden csrf_token field out of the rendered login page
@@ -595,7 +596,7 @@ func TestOAuthHandler_HandleToken_AuthorizationCodeGrant_Success(t *testing.T) {
 
 	// Setup mocks
 	mockClientService.On("ValidateClient", mock.Anything, tenantID, clientID, clientSecret).Return(client, nil)
-	mockAuthService.On("ExchangeAuthorizationCode", mock.Anything, tenantID, "test-code", clientID, "", "http://localhost:3000/callback", "test-verifier").Return(tokenResponse, nil)
+	mockAuthService.On("ExchangeAuthorizationCode", mock.Anything, tenantID, "test-code", client.ID.String(), "", "http://localhost:3000/callback", "test-verifier").Return(tokenResponse, nil)
 
 	// Setup router
 	router := gin.New()
