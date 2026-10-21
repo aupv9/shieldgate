@@ -2,9 +2,11 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"shieldgate/config"
 	"shieldgate/internal/middleware"
@@ -64,11 +66,14 @@ func (h *OAuthHandler) RegisterRoutes(router *gin.RouterGroup) {
 	oidc := router.Group("/.well-known")
 	{
 		oidc.GET("/openid-configuration", h.HandleDiscovery)
+		// RFC 8414 authorization server metadata; same document
+		oidc.GET("/oauth-authorization-server", h.HandleDiscovery)
 		oidc.GET("/jwks.json", h.HandleJWKS)
 	}
 
-	// UserInfo endpoint
+	// UserInfo endpoint; OIDC Core §5.3 requires both GET and POST
 	router.GET("/userinfo", h.HandleUserInfo)
+	router.POST("/userinfo", h.HandleUserInfo)
 }
 
 // HandleAuthorize handles OAuth authorization requests (GET)
@@ -78,7 +83,7 @@ func (h *OAuthHandler) HandleAuthorize(c *gin.Context) {
 	tenantID, err := middleware.GetTenantID(c)
 	if err != nil {
 		h.logger.WithError(err).Warn("missing tenant context on authorize endpoint")
-		h.renderError(c, "invalid_request", "Tenant context required — provide X-Tenant-ID header", "")
+		h.renderError(c, "invalid_request", "Tenant context required — provide X-Tenant-ID header", "", "")
 		return
 	}
 
@@ -94,48 +99,53 @@ func (h *OAuthHandler) HandleAuthorize(c *gin.Context) {
 		Nonce:               c.Query("nonce"),
 	}
 
-	// Validate request
-	if err := req.Validate(); err != nil {
-		h.logger.WithError(err).Warn("invalid authorization request")
-		h.renderError(c, "invalid_request", err.Error(), req.RedirectURI)
-		return
-	}
-
-	// Validate client
+	// Until the client and redirect URI are validated, errors must be shown
+	// to the user rather than redirected (RFC 6749 §4.1.2.1) — otherwise the
+	// endpoint becomes an open redirector
 	client, err := h.clientService.GetByClientID(c.Request.Context(), tenantID, req.ClientID)
 	if err != nil {
 		h.logger.WithError(err).WithField("client_id", req.ClientID).Error("client validation failed")
-		h.renderError(c, "invalid_client", "Invalid client", req.RedirectURI)
+		h.renderError(c, "invalid_client", "Invalid client", "", "")
 		return
 	}
 
-	// Validate redirect URI
 	if err := h.clientService.ValidateRedirectURI(c.Request.Context(), client, req.RedirectURI); err != nil {
 		h.logger.WithError(err).WithField("redirect_uri", req.RedirectURI).Error("invalid redirect URI")
-		h.renderError(c, "invalid_request", "Invalid redirect URI", "")
+		h.renderError(c, "invalid_request", "Invalid redirect URI", "", "")
+		return
+	}
+
+	// From here on the redirect URI is trusted, so errors go back to the client
+	if err := req.Validate(); err != nil {
+		h.logger.WithError(err).Warn("invalid authorization request")
+		h.renderError(c, "unsupported_response_type", err.Error(), req.RedirectURI, req.State)
+		return
+	}
+	if len(req.Nonce) > maxNonceLength {
+		h.renderError(c, "invalid_request", "nonce is too long", req.RedirectURI, req.State)
 		return
 	}
 
 	// The client must be registered for the authorization code grant
 	if !client.HasGrantType("authorization_code") {
-		h.renderError(c, "unauthorized_client", "Client is not authorized for the authorization_code grant", req.RedirectURI)
+		h.renderError(c, "unauthorized_client", "Client is not authorized for the authorization_code grant", req.RedirectURI, req.State)
 		return
 	}
 
 	// Requested scopes must be within the client's registered scopes
 	if _, err := services.ValidateScopeForClient(client, req.Scope); err != nil {
-		h.renderError(c, "invalid_scope", "Requested scope is not allowed for this client", req.RedirectURI)
+		h.renderError(c, "invalid_scope", "Requested scope is not allowed for this client", req.RedirectURI, req.State)
 		return
 	}
 
 	// Validate PKCE for public clients
 	if client.IsPublic {
 		if req.CodeChallenge == "" || req.CodeChallengeMethod == "" {
-			h.renderError(c, "invalid_request", "PKCE required for public clients", req.RedirectURI)
+			h.renderError(c, "invalid_request", "PKCE required for public clients", req.RedirectURI, req.State)
 			return
 		}
 		if req.CodeChallengeMethod != "S256" {
-			h.renderError(c, "invalid_request", "Only S256 code challenge method supported", req.RedirectURI)
+			h.renderError(c, "invalid_request", "Only S256 code challenge method supported", req.RedirectURI, req.State)
 			return
 		}
 	}
@@ -168,12 +178,13 @@ func (h *OAuthHandler) HandleLogin(c *gin.Context) {
 	state := c.PostForm("state")
 	codeChallenge := c.PostForm("code_challenge")
 	codeChallengeMethod := c.PostForm("code_challenge_method")
+	nonce := c.PostForm("nonce")
 
 	// CSRF protection: the hidden form token must match the signed cookie
 	cookieToken, _ := c.Cookie(csrfCookieName)
 	if !validateCSRFToken(h.cfg.JWTSecret, c.PostForm("csrf_token"), cookieToken) {
 		h.logger.WithField("tenant_id", tenantID).Warn("CSRF validation failed on login endpoint")
-		h.renderError(c, "invalid_request", "Invalid or missing CSRF token — please retry the authorization flow", "")
+		h.renderError(c, "invalid_request", "Invalid or missing CSRF token — please retry the authorization flow", "", "")
 		return
 	}
 
@@ -196,6 +207,7 @@ func (h *OAuthHandler) HandleLogin(c *gin.Context) {
 			State:               state,
 			CodeChallenge:       codeChallenge,
 			CodeChallengeMethod: codeChallengeMethod,
+			Nonce:               nonce,
 		}
 
 		h.renderLoginPage(c, req, client, tenant, "Invalid email or password")
@@ -209,29 +221,34 @@ func (h *OAuthHandler) HandleLogin(c *gin.Context) {
 			"tenant_id": tenantID,
 			"client_id": clientID,
 		}).Error("client validation failed during login")
-		h.renderError(c, "invalid_client", "Invalid client", redirectURI)
+		h.renderError(c, "invalid_client", "Invalid client", "", "")
 		return
 	}
 
 	if err := h.clientService.ValidateRedirectURI(c.Request.Context(), client, redirectURI); err != nil {
 		h.logger.WithError(err).WithField("redirect_uri", redirectURI).Error("invalid redirect URI during login")
-		h.renderError(c, "invalid_request", "Invalid redirect URI", "")
+		h.renderError(c, "invalid_request", "Invalid redirect URI", "", "")
 		return
 	}
 
 	// Re-validate grant type and scope — form values are client-controlled
 	if !client.HasGrantType("authorization_code") {
-		h.renderError(c, "unauthorized_client", "Client is not authorized for the authorization_code grant", redirectURI)
+		h.renderError(c, "unauthorized_client", "Client is not authorized for the authorization_code grant", redirectURI, state)
 		return
 	}
 	grantedScope, err := services.ValidateScopeForClient(client, scope)
 	if err != nil {
-		h.renderError(c, "invalid_scope", "Requested scope is not allowed for this client", redirectURI)
+		h.renderError(c, "invalid_scope", "Requested scope is not allowed for this client", redirectURI, state)
 		return
 	}
 	scope = grantedScope
+	if len(nonce) > maxNonceLength {
+		h.renderError(c, "invalid_request", "nonce is too long", redirectURI, state)
+		return
+	}
 
-	// Generate authorization code
+	// Generate authorization code. Without server-side sessions the user has
+	// just authenticated, so auth_time is now.
 	authCode, err := h.authService.GenerateAuthorizationCode(
 		c.Request.Context(),
 		tenantID,
@@ -241,10 +258,12 @@ func (h *OAuthHandler) HandleLogin(c *gin.Context) {
 		scope,
 		codeChallenge,
 		codeChallengeMethod,
+		nonce,
+		time.Now(),
 	)
 	if err != nil {
 		h.logger.WithError(err).Error("failed to generate authorization code")
-		h.renderError(c, "server_error", "Internal server error", redirectURI)
+		h.renderError(c, "server_error", "Internal server error", redirectURI, state)
 		return
 	}
 
@@ -252,7 +271,7 @@ func (h *OAuthHandler) HandleLogin(c *gin.Context) {
 	redirectURL, err := url.Parse(redirectURI)
 	if err != nil {
 		h.logger.WithError(err).Error("invalid redirect URI")
-		h.renderError(c, "invalid_request", "Invalid redirect URI", "")
+		h.renderError(c, "invalid_request", "Invalid redirect URI", "", "")
 		return
 	}
 
@@ -261,6 +280,8 @@ func (h *OAuthHandler) HandleLogin(c *gin.Context) {
 	if state != "" {
 		query.Set("state", state)
 	}
+	// RFC 9207: identify the issuer so clients can detect mix-up attacks
+	query.Set("iss", h.cfg.ServerURL)
 	redirectURL.RawQuery = query.Encode()
 
 	h.logger.WithFields(logrus.Fields{
@@ -327,12 +348,13 @@ func (h *OAuthHandler) handleAuthorizationCodeGrant(c *gin.Context, tenantID uui
 		return
 	}
 
-	// Exchange code for tokens
+	// Exchange code for tokens. The code is bound to the client's internal
+	// ID, not its public client_id.
 	tokenResponse, err := h.authService.ExchangeAuthorizationCode(
 		c.Request.Context(),
 		tenantID,
 		code,
-		clientID,
+		client.ID.String(),
 		"", // client already authenticated above
 		redirectURI,
 		codeVerifier,
@@ -381,8 +403,10 @@ func (h *OAuthHandler) handleRefreshTokenGrant(c *gin.Context, tenantID uuid.UUI
 	}
 
 	// Refresh tokens (rotation with reuse detection; scope may only narrow)
-	tokenResponse, err := h.authService.RefreshTokens(c.Request.Context(), tenantID, refreshToken, client.ClientID, requestedScope)
+	// Refresh tokens are bound to the client's internal ID
+	tokenResponse, err := h.authService.RefreshTokens(c.Request.Context(), tenantID, refreshToken, client.ID.String(), requestedScope)
 	if err != nil {
+		h.logger.WithError(err).WithField("client_id", client.ClientID).Warn("refresh token grant failed")
 		if err == models.ErrInvalidScope {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"error":             "invalid_scope",
@@ -479,34 +503,44 @@ func (h *OAuthHandler) authenticateClient(c *gin.Context, tenantID uuid.UUID) (*
 	return client, true
 }
 
-// HandleUserInfo handles OpenID Connect UserInfo requests
+// HandleUserInfo returns claims about the authenticated user (OIDC Core §5.3).
+// Errors follow RFC 6750 §3 with a WWW-Authenticate challenge.
 func (h *OAuthHandler) HandleUserInfo(c *gin.Context) {
-	// Try to get tenant context, if not available, extract from token
+	// Tenant context comes from the bearer token via TenantContext
 	tenantID, err := middleware.GetTenantID(c)
 	if err != nil {
-		// For UserInfo endpoint, tenant should be extracted from the access token
-		// For now, we'll return an error
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_token"})
+		h.bearerError(c, http.StatusUnauthorized, "invalid_token", "")
 		return
 	}
 
-	// Extract access token
 	authHeader := c.GetHeader("Authorization")
 	if !strings.HasPrefix(authHeader, "Bearer ") {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_token"})
+		// No credentials: RFC 6750 §3.1 says to omit the error code
+		c.Header("WWW-Authenticate", `Bearer realm="`+h.cfg.ServerURL+`"`)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_request"})
 		return
 	}
-
 	token := strings.TrimPrefix(authHeader, "Bearer ")
 
-	// Get user info
 	userInfo, err := h.authService.GetUserInfo(c.Request.Context(), tenantID, token)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_token"})
-		return
+	switch {
+	case err == nil:
+		c.JSON(http.StatusOK, userInfo)
+	case errors.Is(err, models.ErrInsufficientScope):
+		h.bearerError(c, http.StatusForbidden, "insufficient_scope", "openid")
+	default:
+		h.bearerError(c, http.StatusUnauthorized, "invalid_token", "")
 	}
+}
 
-	c.JSON(http.StatusOK, userInfo)
+// bearerError writes an RFC 6750 §3 error with its WWW-Authenticate challenge
+func (h *OAuthHandler) bearerError(c *gin.Context, status int, code, scope string) {
+	challenge := `Bearer realm="` + h.cfg.ServerURL + `", error="` + code + `"`
+	if scope != "" {
+		challenge += `, scope="` + scope + `"`
+	}
+	c.Header("WWW-Authenticate", challenge)
+	c.JSON(status, gin.H{"error": code})
 }
 
 // HandleDiscovery handles OpenID Connect discovery
@@ -620,7 +654,7 @@ func (h *OAuthHandler) renderLoginPage(c *gin.Context, req *models.AuthorizeRequ
 	csrfToken, err := newCSRFToken(h.cfg.JWTSecret)
 	if err != nil {
 		h.logger.WithError(err).Error("failed to generate CSRF token")
-		h.renderError(c, "server_error", "Internal server error", "")
+		h.renderError(c, "server_error", "Internal server error", "", "")
 		return
 	}
 	secureCookie := strings.HasPrefix(h.cfg.ServerURL, "https://")
@@ -640,6 +674,7 @@ func (h *OAuthHandler) renderLoginPage(c *gin.Context, req *models.AuthorizeRequ
 		"state":                 req.State,
 		"code_challenge":        req.CodeChallenge,
 		"code_challenge_method": req.CodeChallengeMethod,
+		"nonce":                 req.Nonce,
 		"response_type":         "code",
 		"csrf_token":            csrfToken,
 	}
@@ -657,14 +692,21 @@ func (h *OAuthHandler) renderLoginPage(c *gin.Context, req *models.AuthorizeRequ
 	c.HTML(http.StatusOK, "login.html", data)
 }
 
-func (h *OAuthHandler) renderError(c *gin.Context, errorCode, errorDescription, redirectURI string) {
+// renderError shows an error page, or, when redirectURI is set, redirects
+// the error to the client. Pass a redirectURI only after it has been
+// validated against the client registration.
+func (h *OAuthHandler) renderError(c *gin.Context, errorCode, errorDescription, redirectURI, state string) {
 	if redirectURI != "" {
-		// Redirect with error
+		// Redirect with error (RFC 6749 §4.1.2.1, RFC 9207)
 		redirectURL, err := url.Parse(redirectURI)
 		if err == nil {
 			query := redirectURL.Query()
 			query.Set("error", errorCode)
 			query.Set("error_description", errorDescription)
+			if state != "" {
+				query.Set("state", state)
+			}
+			query.Set("iss", h.cfg.ServerURL)
 			redirectURL.RawQuery = query.Encode()
 			c.Redirect(http.StatusFound, redirectURL.String())
 			return

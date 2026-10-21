@@ -286,6 +286,13 @@ func Migrate(db *gorm.DB) error {
 		`ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMP WITH TIME ZONE`,
 		`CREATE INDEX IF NOT EXISTS idx_access_tokens_family_id ON access_tokens(family_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_refresh_tokens_family_id ON refresh_tokens(family_id)`,
+
+		// OIDC: nonce and auth_time travel from the authorization request to
+		// the ID token; refresh tokens keep the original auth_time
+		`ALTER TABLE authorization_codes ADD COLUMN IF NOT EXISTS nonce TEXT`,
+		`ALTER TABLE authorization_codes ADD COLUMN IF NOT EXISTS auth_time TIMESTAMP WITH TIME ZONE`,
+		`ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS auth_time TIMESTAMP WITH TIME ZONE`,
+		`ALTER TABLE device_codes ADD COLUMN IF NOT EXISTS auth_time TIMESTAMP WITH TIME ZONE`,
 	}
 
 	// Execute each migration

@@ -280,8 +280,7 @@ func isOAuthEndpoint(path string) bool {
 		"/oauth/revoke",
 		"/oauth/device", // covers /oauth/device and /oauth/device_authorization
 		"/oauth/login",
-		"/.well-known/openid-configuration",
-		"/.well-known/jwks.json",
+		"/.well-known/", // discovery, RFC 8414 metadata, JWKS
 		"/userinfo",
 	}
 	for _, oauthPath := range oauthPaths {

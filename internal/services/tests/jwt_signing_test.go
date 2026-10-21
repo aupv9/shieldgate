@@ -34,7 +34,7 @@ func TestGenerateIDToken_RS256_VerifiableWithPublishedJWKS(t *testing.T) {
 	ctx := context.Background()
 
 	// Act
-	idToken, err := svc.GenerateIDToken(ctx, user, "client-1")
+	idToken, err := svc.GenerateIDToken(ctx, user, &models.IDTokenParams{ClientID: "client-1", Scope: "openid"})
 	require.NoError(t, err)
 	jwks, err := svc.GetJWKS(ctx)
 	require.NoError(t, err)
@@ -46,9 +46,9 @@ func TestGenerateIDToken_RS256_VerifiableWithPublishedJWKS(t *testing.T) {
 	require.Len(t, jwks.Keys, 1)
 	assert.Equal(t, jwks.Keys[0].Kid, unverified.Header["kid"])
 
-	verified, err := ks.Parse(idToken, &models.JWTClaims{})
+	verified, err := ks.Parse(idToken, &models.IDTokenClaims{})
 	require.NoError(t, err)
-	assert.Equal(t, user.ID.String(), verified.Claims.(*models.JWTClaims).Sub)
+	assert.Equal(t, user.ID.String(), verified.Claims.(*models.IDTokenClaims).Sub)
 }
 
 func TestValidateAccessToken_SignedByOtherKey_Rejected(t *testing.T) {

@@ -44,6 +44,7 @@ func TestDeviceFlow_HappyPath(t *testing.T) {
 	ctx := context.Background()
 	tenantID := uuid.New()
 	client := deviceClient(tenantID)
+	require.NoError(t, repos.Client.Create(ctx, client))
 	user := seedUser(t, repos, tenantID)
 
 	// Device requests authorization
