@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
@@ -88,6 +89,8 @@ func main() {
 	userService := services.NewUserService(repos, logger)
 	clientService := services.NewClientService(repos, logger)
 	authService := services.NewAuthService(repos, cfg, logger)
+	roleService := services.NewRoleService(repos.Role, repos.Permission, repos.UserRole, repos.RolePermission, auditService, logger)
+	permissionService := services.NewPermissionService(repos.Permission, repos.Role, repos.UserRole, repos.RolePermission, logger)
 
 	// Start background email queue processor
 	go func() {
@@ -122,14 +125,26 @@ func main() {
 	router.Use(middleware.TenantContext(cfg))
 	router.Use(middleware.RequestID())
 
+	// Initialize authorization
+	superAdminIDs, err := parseUserIDs(cfg.RBACSuperAdminUserIDs)
+	if err != nil {
+		logger.Fatalf("Invalid RBAC_SUPER_ADMIN_USER_IDS: %v", err)
+	}
+	if len(superAdminIDs) == 0 {
+		logger.Warn("No RBAC super admins configured; tenant and permission management is unreachable")
+	}
+	authz := middleware.NewAuthorizer(permissionService, superAdminIDs, logger)
+
 	// Initialize handlers
 	tenantHandler := handlers.NewTenantHandler(tenantService, logger)
 	userHandler := handlers.NewUserHandler(userService, logger)
 	clientHandler := handlers.NewClientHandler(clientService, logger)
 	oauthHandler := handlers.NewOAuthHandler(cfg, tenantService, userService, clientService, authService, logger)
+	rbacHandler := handlers.NewRBACHandler(roleService, permissionService, auditService, logger)
+	auditHandler := handlers.NewAuditHandler(auditService, logger)
 
 	// Setup routes
-	setupRoutes(cfg, db, redisClient, router, tenantHandler, userHandler, clientHandler, oauthHandler, authService)
+	setupRoutes(cfg, db, redisClient, router, tenantHandler, userHandler, clientHandler, oauthHandler, rbacHandler, auditHandler, authService, authz)
 
 	// Create HTTP server
 	server := &http.Server{
@@ -202,7 +217,10 @@ func setupRoutes(
 	userHandler *handlers.UserHandler,
 	clientHandler *handlers.ClientHandler,
 	oauthHandler *handlers.OAuthHandler,
+	rbacHandler *handlers.RBACHandler,
+	auditHandler *handlers.AuditHandler,
 	authService services.AuthService,
+	authz *middleware.Authorizer,
 ) {
 	// Health check endpoint
 	router.GET("/health", func(c *gin.Context) {
@@ -252,14 +270,22 @@ func setupRoutes(
 	api := router.Group("/v1")
 	api.Use(middleware.RequireAuth(cfg, authService)) // Require authentication + revocation check for management APIs
 	{
+		// Every route below adds its own RBAC check via authz
+
 		// Tenant management
-		tenantHandler.RegisterRoutes(api.Group("/tenants"))
+		tenantHandler.RegisterRoutes(api.Group("/tenants"), authz)
 
 		// User management
-		userHandler.RegisterRoutes(api.Group("/users"))
+		userHandler.RegisterRoutes(api.Group("/users"), authz)
 
 		// Client management
-		clientHandler.RegisterRoutes(api.Group("/clients"))
+		clientHandler.RegisterRoutes(api.Group("/clients"), authz)
+
+		// RBAC: /v1/roles, /v1/permissions, /v1/users/:user_id/{roles,permissions}
+		rbacHandler.RegisterRoutes(api, authz)
+
+		// Audit logs: /v1/audit/...
+		auditHandler.RegisterRoutes(api, authz)
 	}
 
 	// Serve static files and templates
@@ -273,4 +299,21 @@ func setupRoutes(
 	})
 
 	router.LoadHTMLGlob("templates/*")
+}
+
+// parseUserIDs parses a comma-separated list of user UUIDs, ignoring blanks
+func parseUserIDs(raw string) ([]uuid.UUID, error) {
+	var ids []uuid.UUID
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		id, err := uuid.Parse(part)
+		if err != nil {
+			return nil, fmt.Errorf("%q is not a valid UUID: %w", part, err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
 }

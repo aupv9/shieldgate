@@ -27,14 +27,15 @@ func NewUserHandler(userService services.UserService, logger *logrus.Logger) *Us
 	}
 }
 
-// RegisterRoutes registers user management routes
-func (h *UserHandler) RegisterRoutes(router *gin.RouterGroup) {
-	router.POST("", h.CreateUser)
-	router.GET("/:user_id", h.GetUser)
-	router.PUT("/:user_id", h.UpdateUser)
-	router.DELETE("/:user_id", h.DeleteUser)
-	router.GET("", h.ListUsers)
-	router.POST("/:user_id/change-password", h.ChangePassword)
+// RegisterRoutes registers user management routes. Users may read their own
+// record and change their own password (which requires the old password).
+func (h *UserHandler) RegisterRoutes(router *gin.RouterGroup, authz *middleware.Authorizer) {
+	router.POST("", authz.Require("user", "create"), h.CreateUser)
+	router.GET("/:user_id", authz.RequireOrSelf("user", "read", "user_id"), h.GetUser)
+	router.PUT("/:user_id", authz.Require("user", "update"), h.UpdateUser)
+	router.DELETE("/:user_id", authz.Require("user", "delete"), h.DeleteUser)
+	router.GET("", authz.Require("user", "read"), h.ListUsers)
+	router.POST("/:user_id/change-password", authz.RequireOrSelf("user", "update", "user_id"), h.ChangePassword)
 }
 
 // CreateUser handles POST /v1/users
