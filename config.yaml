@@ -29,6 +29,7 @@ security:
   bcrypt_cost: 12
   access_token_duration: 3600  # seconds
   refresh_token_duration: 2592000  # seconds (30 days)
+  id_token_duration: 3600  # seconds
   authorization_code_duration: 600  # seconds (10 minutes)
 
 # CORS configuration

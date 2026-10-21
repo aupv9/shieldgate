@@ -119,8 +119,18 @@ func (ks *KeySet) Sign(claims jwt.Claims) (string, error) {
 // Parse verifies a token against the key set and decodes it into claims.
 // The key is chosen by kid and must match the token's alg, which rules out
 // algorithm-confusion attacks (e.g. an RSA public key used as an HMAC secret).
-func (ks *KeySet) Parse(tokenString string, claims jwt.Claims) (*jwt.Token, error) {
-	return jwt.ParseWithClaims(tokenString, claims, ks.keyfunc, jwt.WithValidMethods(ks.algs))
+// Extra options (issuer, audience, ...) are applied on top.
+func (ks *KeySet) Parse(tokenString string, claims jwt.Claims, opts ...jwt.ParserOption) (*jwt.Token, error) {
+	opts = append([]jwt.ParserOption{jwt.WithValidMethods(ks.algs)}, opts...)
+	return jwt.ParseWithClaims(tokenString, claims, ks.keyfunc, opts...)
+}
+
+// TokenHash computes an OIDC token hash such as at_hash (OIDC Core §3.1.3.6):
+// the left half of the hash of the token, using the hash of the active
+// signing alg, base64url-encoded. Every supported alg uses SHA-256.
+func (ks *KeySet) TokenHash(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return b64(sum[:len(sum)/2])
 }
 
 func (ks *KeySet) keyfunc(token *jwt.Token) (interface{}, error) {
