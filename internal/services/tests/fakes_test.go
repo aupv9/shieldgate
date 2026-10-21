@@ -5,6 +5,7 @@ package tests
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -143,6 +144,10 @@ func newFakeAccessTokenRepo() *fakeAccessTokenRepo {
 func (r *fakeAccessTokenRepo) Create(ctx context.Context, token *models.AccessToken) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// Mirror the unique index on access_tokens.token
+	if _, exists := r.tokens[token.Token]; exists {
+		return errors.New("duplicate key value violates unique constraint \"idx_access_tokens_token\"")
+	}
 	stored := *token
 	r.tokens[token.Token] = &stored
 	return nil

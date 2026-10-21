@@ -182,7 +182,7 @@ func (h *OAuthHandler) handleTokenExchangeGrant(c *gin.Context, tenantID uuid.UU
 func (h *OAuthHandler) HandleDeviceVerificationPage(c *gin.Context) {
 	tenantID, err := middleware.GetTenantID(c)
 	if err != nil {
-		h.renderError(c, "invalid_request", "Tenant context required — provide X-Tenant-ID header", "")
+		h.renderError(c, "invalid_request", "Tenant context required — provide X-Tenant-ID header", "", "")
 		return
 	}
 
@@ -195,7 +195,7 @@ func (h *OAuthHandler) HandleDeviceVerificationPage(c *gin.Context) {
 func (h *OAuthHandler) HandleDeviceVerification(c *gin.Context) {
 	tenantID, err := middleware.GetTenantID(c)
 	if err != nil {
-		h.renderError(c, "invalid_request", "Tenant context required — provide X-Tenant-ID header", "")
+		h.renderError(c, "invalid_request", "Tenant context required — provide X-Tenant-ID header", "", "")
 		return
 	}
 
@@ -256,7 +256,7 @@ func (h *OAuthHandler) renderDevicePage(c *gin.Context, tenant *models.Tenant, u
 	csrfToken, err := newCSRFToken(h.cfg.JWTSecret)
 	if err != nil {
 		h.logger.WithError(err).Error("failed to generate CSRF token")
-		h.renderError(c, "server_error", "Internal server error", "")
+		h.renderError(c, "server_error", "Internal server error", "", "")
 		return
 	}
 	secureCookie := strings.HasPrefix(h.cfg.ServerURL, "https://")

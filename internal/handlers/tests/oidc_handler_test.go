@@ -127,11 +127,12 @@ func TestHandleUserInfo_ValidToken_ReturnsClaims(t *testing.T) {
 	token := utils.CreateTestJWT(cfg, userID, clientID, tenantID, "openid profile email")
 
 	mockAuth := new(MockAuthService)
+	verified := true
 	mockAuth.On("GetUserInfo", mock.Anything, tenantID, token).Return(&models.UserInfo{
 		Sub:           userID.String(),
 		Name:          "Test User",
 		Email:         "test@example.com",
-		EmailVerified: true,
+		EmailVerified: &verified,
 	}, nil)
 
 	gin.SetMode(gin.TestMode)
