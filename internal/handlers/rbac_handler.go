@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -36,42 +37,43 @@ func NewRBACHandler(
 	}
 }
 
-// RegisterRoutes registers RBAC routes
-func (h *RBACHandler) RegisterRoutes(router *gin.RouterGroup) {
+// RegisterRoutes registers RBAC routes on a versioned, authenticated group
+func (h *RBACHandler) RegisterRoutes(router *gin.RouterGroup, authz *middleware.Authorizer) {
 	// Role management endpoints
-	roles := router.Group("/v1/roles")
+	roles := router.Group("/roles")
 	{
-		roles.POST("", h.CreateRole)
-		roles.GET("", h.ListRoles)
-		roles.GET("/:role_id", h.GetRole)
-		roles.PUT("/:role_id", h.UpdateRole)
-		roles.DELETE("/:role_id", h.DeleteRole)
+		roles.POST("", authz.Require("role", "create"), h.CreateRole)
+		roles.GET("", authz.Require("role", "read"), h.ListRoles)
+		roles.GET("/:role_id", authz.Require("role", "read"), h.GetRole)
+		roles.PUT("/:role_id", authz.Require("role", "update"), h.UpdateRole)
+		roles.DELETE("/:role_id", authz.Require("role", "delete"), h.DeleteRole)
 
 		// Role permissions
-		roles.POST("/:role_id/permissions", h.AddPermissionToRole)
-		roles.DELETE("/:role_id/permissions/:permission_id", h.RemovePermissionFromRole)
-		roles.GET("/:role_id/permissions", h.GetRolePermissions)
+		roles.POST("/:role_id/permissions", authz.Require("role", "update"), h.AddPermissionToRole)
+		roles.DELETE("/:role_id/permissions/:permission_id", authz.Require("role", "update"), h.RemovePermissionFromRole)
+		roles.GET("/:role_id/permissions", authz.Require("role", "read"), h.GetRolePermissions)
 
 		// Role assignments
-		roles.POST("/:role_id/users", h.AssignRoleToUser)
-		roles.DELETE("/:role_id/users/:user_id", h.RevokeRoleFromUser)
+		roles.POST("/:role_id/users", authz.Require("role", "assign"), h.AssignRoleToUser)
+		roles.DELETE("/:role_id/users/:user_id", authz.Require("role", "assign"), h.RevokeRoleFromUser)
 	}
 
-	// Permission management endpoints
-	permissions := router.Group("/v1/permissions")
+	// Permission catalog is global across tenants: any tenant may read it,
+	// only super admins may change it
+	permissions := router.Group("/permissions")
 	{
-		permissions.POST("", h.CreatePermission)
-		permissions.GET("", h.ListPermissions)
-		permissions.GET("/:permission_id", h.GetPermission)
-		permissions.PUT("/:permission_id", h.UpdatePermission)
-		permissions.DELETE("/:permission_id", h.DeletePermission)
+		permissions.POST("", authz.RequireSuperAdmin(), h.CreatePermission)
+		permissions.GET("", authz.Require("permission", "read"), h.ListPermissions)
+		permissions.GET("/:permission_id", authz.Require("permission", "read"), h.GetPermission)
+		permissions.PUT("/:permission_id", authz.RequireSuperAdmin(), h.UpdatePermission)
+		permissions.DELETE("/:permission_id", authz.RequireSuperAdmin(), h.DeletePermission)
 	}
 
-	// User role endpoints
-	users := router.Group("/v1/users")
+	// User role endpoints; users may inspect their own roles and permissions
+	users := router.Group("/users")
 	{
-		users.GET("/:user_id/roles", h.GetUserRoles)
-		users.GET("/:user_id/permissions", h.GetUserPermissions)
+		users.GET("/:user_id/roles", authz.RequireOrSelf("role", "read", "user_id"), h.GetUserRoles)
+		users.GET("/:user_id/permissions", authz.RequireOrSelf("role", "read", "user_id"), h.GetUserPermissions)
 	}
 }
 
@@ -510,14 +512,17 @@ func (h *RBACHandler) handleServiceError(c *gin.Context, err error, message stri
 
 	h.logger.WithError(err).WithField("request_id", requestID).Error(message)
 
-	switch err {
-	case models.ErrRoleNotFound, models.ErrPermissionNotFound:
-		middleware.RespondWithError(c, http.StatusNotFound, models.ErrorCodeResourceNotFound, err.Error(), nil)
-	case models.ErrDuplicateResource:
+	// Services wrap sentinel errors with context, so match with errors.Is
+	switch {
+	case errors.Is(err, models.ErrRoleNotFound):
+		middleware.RespondWithError(c, http.StatusNotFound, models.ErrorCodeResourceNotFound, models.ErrRoleNotFound.Error(), nil)
+	case errors.Is(err, models.ErrPermissionNotFound):
+		middleware.RespondWithError(c, http.StatusNotFound, models.ErrorCodeResourceNotFound, models.ErrPermissionNotFound.Error(), nil)
+	case errors.Is(err, models.ErrDuplicateResource):
 		middleware.RespondWithError(c, http.StatusConflict, models.ErrorCodeDuplicateResource, "Resource already exists", nil)
-	case models.ErrBusinessRuleViolation:
+	case errors.Is(err, models.ErrBusinessRuleViolation):
 		middleware.RespondWithError(c, http.StatusUnprocessableEntity, models.ErrorCodeBusinessRuleViolation, "Business rule violation", nil)
-	case models.ErrInsufficientPermissions:
+	case errors.Is(err, models.ErrInsufficientPermissions):
 		middleware.RespondWithError(c, http.StatusForbidden, models.ErrorCodeInsufficientPermissions, "Insufficient permissions", nil)
 	default:
 		middleware.RespondWithError(c, http.StatusInternalServerError, models.ErrorCodeInternalError, "Internal server error", nil)
