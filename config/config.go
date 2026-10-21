@@ -41,6 +41,10 @@ type Config struct {
 	// Rate Limiting
 	RateLimitRequestsPerMinute int
 
+	// RBAC: comma-separated user IDs that bypass permission checks and may
+	// manage tenants and the global permission catalog
+	RBACSuperAdminUserIDs string
+
 	// Logging
 	LogLevel  string
 	LogFormat string
@@ -87,6 +91,7 @@ func Load() (*Config, error) {
 	viper.BindEnv("cors.allowed_methods", "CORS_ALLOWED_METHODS")
 	viper.BindEnv("cors.allowed_headers", "CORS_ALLOWED_HEADERS")
 	viper.BindEnv("rate_limit.requests_per_minute", "RATE_LIMIT_REQUESTS_PER_MINUTE")
+	viper.BindEnv("rbac.super_admin_user_ids", "RBAC_SUPER_ADMIN_USER_IDS")
 	viper.BindEnv("logging.level", "LOG_LEVEL")
 	viper.BindEnv("logging.format", "LOG_FORMAT")
 	viper.BindEnv("smtp.host", "SMTP_HOST")
@@ -141,6 +146,9 @@ func Load() (*Config, error) {
 		// Rate Limiting
 		RateLimitRequestsPerMinute: viper.GetInt("rate_limit.requests_per_minute"),
 
+		// RBAC
+		RBACSuperAdminUserIDs: viper.GetString("rbac.super_admin_user_ids"),
+
 		// Logging
 		LogLevel:  viper.GetString("logging.level"),
 		LogFormat: viper.GetString("logging.format"),
@@ -187,6 +195,9 @@ func setDefaults() {
 
 	// Rate limiting defaults
 	viper.SetDefault("rate_limit.requests_per_minute", 60)
+
+	// RBAC defaults
+	viper.SetDefault("rbac.super_admin_user_ids", "")
 
 	// Logging defaults
 	viper.SetDefault("logging.level", "info")

@@ -171,6 +171,111 @@ func Migrate(db *gorm.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_device_codes_tenant_id ON device_codes(tenant_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_device_codes_expires_at ON device_codes(expires_at)`,
 
+		// Create RBAC tables. granted_by has no FK to users because grants
+		// may be issued by the system (tenant ID) or a client-credentials token
+		`CREATE TABLE IF NOT EXISTS permissions (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			name VARCHAR(255) NOT NULL,
+			display_name VARCHAR(255) NOT NULL,
+			description TEXT,
+			resource VARCHAR(255) NOT NULL,
+			action VARCHAR(255) NOT NULL,
+			is_system BOOLEAN NOT NULL DEFAULT false,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+			updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+			deleted_at TIMESTAMP WITH TIME ZONE
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_permissions_name ON permissions(name) WHERE deleted_at IS NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_permissions_resource ON permissions(resource)`,
+		`CREATE INDEX IF NOT EXISTS idx_permissions_deleted_at ON permissions(deleted_at)`,
+
+		`CREATE TABLE IF NOT EXISTS roles (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL,
+			name VARCHAR(255) NOT NULL,
+			display_name VARCHAR(255) NOT NULL,
+			description TEXT,
+			is_system BOOLEAN NOT NULL DEFAULT false,
+			is_active BOOLEAN NOT NULL DEFAULT true,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+			updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+			deleted_at TIMESTAMP WITH TIME ZONE
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_roles_tenant_name ON roles(tenant_id, name) WHERE deleted_at IS NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_roles_tenant_id ON roles(tenant_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_roles_deleted_at ON roles(deleted_at)`,
+
+		`CREATE TABLE IF NOT EXISTS user_roles (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL,
+			user_id UUID NOT NULL,
+			role_id UUID NOT NULL,
+			granted_by UUID NOT NULL,
+			granted_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+			expires_at TIMESTAMP WITH TIME ZONE
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_user_roles_unique ON user_roles(tenant_id, user_id, role_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_roles_role_id ON user_roles(role_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_roles_expires_at ON user_roles(expires_at)`,
+
+		`CREATE TABLE IF NOT EXISTS role_permissions (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			role_id UUID NOT NULL,
+			permission_id UUID NOT NULL,
+			granted_by UUID NOT NULL,
+			granted_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_role_permissions_unique ON role_permissions(role_id, permission_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_role_permissions_permission_id ON role_permissions(permission_id)`,
+
+		// Create audit_logs table
+		`CREATE TABLE IF NOT EXISTS audit_logs (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL,
+			user_id UUID,
+			client_id UUID,
+			action VARCHAR(255) NOT NULL,
+			resource VARCHAR(255) NOT NULL,
+			resource_id UUID,
+			ip_address VARCHAR(45),
+			user_agent TEXT,
+			request_id VARCHAR(255),
+			success BOOLEAN NOT NULL,
+			error_code VARCHAR(255),
+			error_message TEXT,
+			metadata JSONB DEFAULT '{}',
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_logs_tenant_created ON audit_logs(tenant_id, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_logs_tenant_user ON audit_logs(tenant_id, user_id, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_logs_tenant_resource ON audit_logs(tenant_id, resource, resource_id, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_logs_tenant_action ON audit_logs(tenant_id, action, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at)`,
+
+		// Seed the system permissions checked by the management API authorizer.
+		// Tenant and permission-catalog changes are super-admin only, so they
+		// have no grantable permission. "manage" covers every action.
+		`INSERT INTO permissions (name, display_name, description, resource, action, is_system) VALUES
+			('users.create', 'Create Users', 'Create new users', 'user', 'create', true),
+			('users.read', 'Read Users', 'View user information', 'user', 'read', true),
+			('users.update', 'Update Users', 'Update user information', 'user', 'update', true),
+			('users.delete', 'Delete Users', 'Delete users', 'user', 'delete', true),
+			('users.manage', 'Manage Users', 'Full user management access', 'user', 'manage', true),
+			('clients.create', 'Create Clients', 'Create OAuth clients', 'client', 'create', true),
+			('clients.read', 'Read Clients', 'View OAuth clients', 'client', 'read', true),
+			('clients.update', 'Update Clients', 'Update OAuth clients', 'client', 'update', true),
+			('clients.delete', 'Delete Clients', 'Delete OAuth clients', 'client', 'delete', true),
+			('clients.manage', 'Manage Clients', 'Full client management access', 'client', 'manage', true),
+			('roles.create', 'Create Roles', 'Create new roles', 'role', 'create', true),
+			('roles.read', 'Read Roles', 'View roles', 'role', 'read', true),
+			('roles.update', 'Update Roles', 'Update roles and their permissions', 'role', 'update', true),
+			('roles.delete', 'Delete Roles', 'Delete roles', 'role', 'delete', true),
+			('roles.assign', 'Assign Roles', 'Assign roles to users', 'role', 'assign', true),
+			('roles.manage', 'Manage Roles', 'Full role management access', 'role', 'manage', true),
+			('permissions.read', 'Read Permissions', 'View the permission catalog', 'permission', 'read', true),
+			('audit.read', 'Read Audit Logs', 'View audit logs', 'audit', 'read', true)
+		ON CONFLICT (name) WHERE deleted_at IS NULL DO NOTHING`,
+
 		// Phase 1 hardening: columns for token hashing, rotation families,
 		// and authorization-code reuse detection on databases created before
 		// these fields existed (ALTER ... IF NOT EXISTS keeps this idempotent)

@@ -35,6 +35,10 @@ cors:
 rate_limit:
   requests_per_minute: 60
 
+rbac:
+  # Comma-separated user UUIDs with full access (tenants, permission catalog)
+  super_admin_user_ids: ""
+
 # Logging configuration
 logging:
   level: "info"

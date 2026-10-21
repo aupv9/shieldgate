@@ -28,9 +28,9 @@ func NewTenantHandler(tenantService services.TenantService, logger *logrus.Logge
 }
 
 // RegisterRoutes registers tenant routes with the router
-func (h *TenantHandler) RegisterRoutes(router *gin.RouterGroup) {
-	// Admin routes for tenant management (no tenant context required)
-	admin := router.Group("/admin")
+func (h *TenantHandler) RegisterRoutes(router *gin.RouterGroup, authz *middleware.Authorizer) {
+	// Admin routes for tenant management span tenants, so only super admins
+	admin := router.Group("/admin", authz.RequireSuperAdmin())
 	{
 		admin.POST("/tenants", h.CreateTenant)
 		admin.GET("/tenants", h.ListTenants)

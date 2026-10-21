@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -31,10 +32,10 @@ func NewAuditHandler(
 	}
 }
 
-// RegisterRoutes registers audit routes
-func (h *AuditHandler) RegisterRoutes(router *gin.RouterGroup) {
+// RegisterRoutes registers audit routes on a versioned, authenticated group
+func (h *AuditHandler) RegisterRoutes(router *gin.RouterGroup, authz *middleware.Authorizer) {
 	// Audit log endpoints
-	audit := router.Group("/v1/audit")
+	audit := router.Group("/audit", authz.Require("audit", "read"))
 	{
 		audit.GET("/logs", h.QueryAuditLogs)
 		audit.GET("/logs/:audit_id", h.GetAuditLog)
@@ -424,10 +425,11 @@ func (h *AuditHandler) handleServiceError(c *gin.Context, err error, message str
 
 	h.logger.WithError(err).WithField("request_id", requestID).Error(message)
 
-	switch err {
-	case models.ErrResourceNotFound:
-		middleware.RespondWithError(c, http.StatusNotFound, models.ErrorCodeResourceNotFound, err.Error(), nil)
-	case models.ErrInsufficientPermissions:
+	// Services wrap sentinel errors with context, so match with errors.Is
+	switch {
+	case errors.Is(err, models.ErrResourceNotFound):
+		middleware.RespondWithError(c, http.StatusNotFound, models.ErrorCodeResourceNotFound, models.ErrResourceNotFound.Error(), nil)
+	case errors.Is(err, models.ErrInsufficientPermissions):
 		middleware.RespondWithError(c, http.StatusForbidden, models.ErrorCodeInsufficientPermissions, "Insufficient permissions", nil)
 	default:
 		middleware.RespondWithError(c, http.StatusInternalServerError, models.ErrorCodeInternalError, "Internal server error", nil)

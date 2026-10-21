@@ -877,7 +877,6 @@ type UpdateRoleRequest struct {
 // AssignRoleRequest represents a request to assign a role to a user
 type AssignRoleRequest struct {
 	UserID    uuid.UUID  `json:"user_id" binding:"required"`
-	RoleID    uuid.UUID  `json:"role_id" binding:"required"`
 	ExpiresAt *time.Time `json:"expires_at"`
 }
 
