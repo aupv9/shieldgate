@@ -10,10 +10,10 @@ import (
 	"time"
 
 	"shieldgate/config"
+	"shieldgate/internal/jwtkeys"
 	"shieldgate/internal/models"
 	"shieldgate/internal/repo"
 
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 )
@@ -21,14 +21,17 @@ import (
 type authServiceImpl struct {
 	repos  *repo.Repositories
 	config *config.Config
+	keys   *jwtkeys.KeySet
 	logger *logrus.Logger
 }
 
-// NewAuthService creates a new auth service implementation
-func NewAuthService(repos *repo.Repositories, config *config.Config, logger *logrus.Logger) AuthService {
+// NewAuthService creates a new auth service implementation. keys signs every
+// issued JWT and verifies presented ones.
+func NewAuthService(repos *repo.Repositories, config *config.Config, keys *jwtkeys.KeySet, logger *logrus.Logger) AuthService {
 	return &authServiceImpl{
 		repos:  repos,
 		config: config,
+		keys:   keys,
 		logger: logger,
 	}
 }
@@ -355,13 +358,7 @@ func (s *authServiceImpl) IntrospectToken(ctx context.Context, tenantID uuid.UUI
 }
 
 func (s *authServiceImpl) ValidateAccessToken(ctx context.Context, tenantID uuid.UUID, tokenString string) (*models.JWTClaims, error) {
-	token, err := jwt.ParseWithClaims(tokenString, &models.JWTClaims{}, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-		}
-		return []byte(s.config.JWTSecret), nil
-	})
-
+	token, err := s.keys.Parse(tokenString, &models.JWTClaims{})
 	if err != nil {
 		return nil, err
 	}
@@ -412,8 +409,7 @@ func (s *authServiceImpl) GenerateIDToken(ctx context.Context, user *models.User
 		Name:     user.Username,
 	}
 
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString([]byte(s.config.JWTSecret))
+	return s.keys.Sign(claims)
 }
 
 func (s *authServiceImpl) GetUserInfo(ctx context.Context, tenantID uuid.UUID, accessToken string) (*models.UserInfo, error) {
@@ -459,10 +455,15 @@ func (s *authServiceImpl) GetDiscoveryDocument(ctx context.Context) (*models.Ope
 			models.GrantTypeTokenExchange,
 		},
 		SubjectTypesSupported:            []string{"public"},
-		IDTokenSigningAlgValuesSupported: []string{"HS256"},
+		IDTokenSigningAlgValuesSupported: []string{s.keys.Algorithm()},
 		ScopesSupported:                  []string{"openid", "profile", "email", "read", "write"},
 		ClaimsSupported:                  []string{"sub", "name", "email", "email_verified"},
 	}, nil
+}
+
+func (s *authServiceImpl) GetJWKS(ctx context.Context) (*jwtkeys.JWKSet, error) {
+	set := s.keys.JWKS()
+	return &set, nil
 }
 
 func (s *authServiceImpl) CleanupExpiredTokens(ctx context.Context) error {
@@ -508,8 +509,7 @@ func (s *authServiceImpl) generateJWTWithSubject(subject string, tenantID, clien
 		claims.UserID = userID.String()
 	}
 
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString([]byte(s.config.JWTSecret))
+	return s.keys.Sign(claims)
 }
 
 func (s *authServiceImpl) generateRandomString(length int) (string, error) {

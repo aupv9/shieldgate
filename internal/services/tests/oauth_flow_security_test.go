@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/bcrypt"
 
+	"shieldgate/internal/jwtkeys"
 	"shieldgate/internal/models"
 	"shieldgate/internal/repo"
 	"shieldgate/internal/services"
@@ -30,7 +31,8 @@ func quietLogger() *logrus.Logger {
 
 func newAuthServiceWithFakes() (services.AuthService, *repo.Repositories) {
 	repos := newFakeRepositories()
-	return services.NewAuthService(repos, utils.CreateTestConfig(), quietLogger()), repos
+	cfg := utils.CreateTestConfig()
+	return services.NewAuthService(repos, cfg, jwtkeys.NewHMAC(cfg.JWTSecret), quietLogger()), repos
 }
 
 func newClientServiceWithFakes() (services.ClientService, *repo.Repositories) {

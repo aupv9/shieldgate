@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"shieldgate/internal/jwtkeys"
 	"shieldgate/internal/models"
 
 	"github.com/google/uuid"
@@ -108,6 +109,8 @@ type AuthService interface {
 	GenerateIDToken(ctx context.Context, user *models.User, clientID string) (string, error)
 	GetUserInfo(ctx context.Context, tenantID uuid.UUID, accessToken string) (*models.UserInfo, error)
 	GetDiscoveryDocument(ctx context.Context) (*models.OpenIDConfiguration, error)
+	// GetJWKS returns the public signing keys (RFC 7517)
+	GetJWKS(ctx context.Context) (*jwtkeys.JWKSet, error)
 
 	// Cleanup
 	CleanupExpiredTokens(ctx context.Context) error

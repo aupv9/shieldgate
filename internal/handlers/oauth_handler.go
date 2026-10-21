@@ -520,21 +520,20 @@ func (h *OAuthHandler) HandleDiscovery(c *gin.Context) {
 	c.JSON(http.StatusOK, discovery)
 }
 
-// HandleJWKS handles JWKS endpoint.
-// This server uses HS256 (symmetric HMAC). The shared secret is never exposed via JWKS.
-// The entry below advertises the signing algorithm so OIDC discovery clients can read
-// key metadata. Token validation requires the shared JWT secret (out-of-band).
+// HandleJWKS publishes the public signing keys (RFC 7517) so relying parties
+// can verify ID and access tokens. HS256 secrets are never published, so the
+// set is empty when the server signs with HS256.
 func (h *OAuthHandler) HandleJWKS(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{
-		"keys": []gin.H{
-			{
-				"kty": "oct",
-				"use": "sig",
-				"alg": "HS256",
-				"kid": "default",
-			},
-		},
-	})
+	jwks, err := h.authService.GetJWKS(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "server_error"})
+		return
+	}
+
+	// Short cache so a newly pre-published key is picked up well before it is
+	// used for signing (see internal/jwtkeys for the rotation procedure)
+	c.Header("Cache-Control", "public, max-age=900")
+	c.JSON(http.StatusOK, jwks)
 }
 
 // HandleIntrospect handles token introspection (RFC 7662).

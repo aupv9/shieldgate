@@ -8,12 +8,12 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 
 	"shieldgate/config"
 	"shieldgate/internal/database"
+	"shieldgate/internal/jwtkeys"
 	"shieldgate/internal/models"
 )
 
@@ -26,7 +26,7 @@ const (
 )
 
 // TenantContext middleware extracts and validates tenant context
-func TenantContext(cfg *config.Config) gin.HandlerFunc {
+func TenantContext(keys *jwtkeys.KeySet) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// Generate request ID for tracing
 		requestID := uuid.New().String()
@@ -35,7 +35,7 @@ func TenantContext(cfg *config.Config) gin.HandlerFunc {
 
 		// For OAuth endpoints, try to extract tenant but don't fail if not found
 		if isOAuthEndpoint(c.Request.URL.Path) {
-			if tenantID, err := extractTenantID(c, cfg.JWTSecret); err == nil {
+			if tenantID, err := extractTenantID(c, keys); err == nil {
 				c.Set(TenantIDKey, tenantID)
 				logrus.WithFields(logrus.Fields{
 					"request_id": requestID,
@@ -55,7 +55,7 @@ func TenantContext(cfg *config.Config) gin.HandlerFunc {
 		}
 
 		// Extract tenant ID from various sources
-		tenantID, err := extractTenantID(c, cfg.JWTSecret)
+		tenantID, err := extractTenantID(c, keys)
 		if err != nil {
 			logrus.WithFields(logrus.Fields{
 				"request_id": requestID,
@@ -105,7 +105,7 @@ type AccessTokenValidator interface {
 // RequireAuth middleware validates JWT token and sets user/client/tenant context.
 // When an AccessTokenValidator is supplied, revoked tokens are rejected even if
 // their signature is still valid.
-func RequireAuth(cfg *config.Config, validators ...AccessTokenValidator) gin.HandlerFunc {
+func RequireAuth(keys *jwtkeys.KeySet, validators ...AccessTokenValidator) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
@@ -127,12 +127,7 @@ func RequireAuth(cfg *config.Config, validators ...AccessTokenValidator) gin.Han
 			return
 		}
 
-		token, err := jwt.ParseWithClaims(tokenString, &models.JWTClaims{}, func(token *jwt.Token) (interface{}, error) {
-			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-			}
-			return []byte(cfg.JWTSecret), nil
-		})
+		token, err := keys.Parse(tokenString, &models.JWTClaims{})
 
 		if err != nil || !token.Valid {
 			RespondWithError(c, http.StatusUnauthorized, models.ErrorCodeUnauthorized, "Invalid or expired token", nil)
@@ -224,12 +219,12 @@ func GetClientID(c *gin.Context) (uuid.UUID, error) {
 }
 
 // extractTenantID extracts tenant ID from various request sources
-func extractTenantID(c *gin.Context, jwtSecret string) (uuid.UUID, error) {
+func extractTenantID(c *gin.Context, keys *jwtkeys.KeySet) (uuid.UUID, error) {
 	// 1. Try to extract from JWT token (preferred for authenticated requests)
 	if authHeader := c.GetHeader("Authorization"); authHeader != "" {
 		if strings.HasPrefix(authHeader, "Bearer ") {
 			tokenString := strings.TrimPrefix(authHeader, "Bearer ")
-			if tenantID, err := extractTenantFromJWT(tokenString, jwtSecret); err == nil {
+			if tenantID, err := extractTenantFromJWT(tokenString, keys); err == nil {
 				return tenantID, nil
 			}
 		}
@@ -251,13 +246,8 @@ func extractTenantID(c *gin.Context, jwtSecret string) (uuid.UUID, error) {
 }
 
 // extractTenantFromJWT parses a JWT token and extracts the tenant_id claim
-func extractTenantFromJWT(tokenString, jwtSecret string) (uuid.UUID, error) {
-	token, err := jwt.ParseWithClaims(tokenString, &models.JWTClaims{}, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-		}
-		return []byte(jwtSecret), nil
-	})
+func extractTenantFromJWT(tokenString string, keys *jwtkeys.KeySet) (uuid.UUID, error) {
+	token, err := keys.Parse(tokenString, &models.JWTClaims{})
 	if err != nil || !token.Valid {
 		return uuid.Nil, fmt.Errorf("invalid token")
 	}

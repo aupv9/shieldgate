@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/mock"
 
 	"shieldgate/internal/handlers"
+	"shieldgate/internal/jwtkeys"
 	"shieldgate/internal/models"
 	"shieldgate/tests/utils"
 )
@@ -267,6 +268,11 @@ func (m *MockAuthService) GetUserInfo(ctx context.Context, tenantID uuid.UUID, a
 func (m *MockAuthService) GetDiscoveryDocument(ctx context.Context) (*models.OpenIDConfiguration, error) {
 	args := m.Called(ctx)
 	return args.Get(0).(*models.OpenIDConfiguration), args.Error(1)
+}
+
+func (m *MockAuthService) GetJWKS(ctx context.Context) (*jwtkeys.JWKSet, error) {
+	args := m.Called(ctx)
+	return args.Get(0).(*jwtkeys.JWKSet), args.Error(1)
 }
 
 func (m *MockAuthService) CleanupExpiredTokens(ctx context.Context) error {

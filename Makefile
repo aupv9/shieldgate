@@ -1,7 +1,7 @@
 # ShieldGate Makefile
 # Provides convenient commands for development and deployment
 
-.PHONY: help setup build start stop restart logs clean test lint fmt vet security backup restore deploy
+.PHONY: help setup build start stop restart logs clean test lint fmt vet security backup restore deploy jwt-keys
 
 # Default target
 help: ## Show this help message
@@ -131,6 +131,16 @@ redis-cli: ## Access Redis CLI
 generate-secret: ## Generate a new JWT secret
 	@echo "🔑 Generated JWT secret:"
 	@openssl rand -base64 64 | tr -d "=+/" | cut -c1-64
+
+jwt-keys: ## Generate an RS256 signing key pair in ./secrets (KID_NAME=name to choose the file name)
+	@mkdir -p secrets && chmod 700 secrets
+	@name=$${KID_NAME:-jwt-signing-$$(date +%Y%m%d)}; \
+	if [ -e secrets/$$name.pem ]; then echo "❌ secrets/$$name.pem already exists"; exit 1; fi; \
+	openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out secrets/$$name.pem 2>/dev/null && \
+	chmod 600 secrets/$$name.pem && \
+	openssl pkey -in secrets/$$name.pem -pubout -out secrets/$$name.pub.pem && \
+	echo "🔑 Private key: secrets/$$name.pem (set JWT_SIGNING_KEY_FILE)" && \
+	echo "🔓 Public key:  secrets/$$name.pub.pem (usable in JWT_VERIFICATION_KEY_FILES)"
 
 health: ## Check service health
 	@echo "🏥 Checking service health..."
