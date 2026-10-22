@@ -164,7 +164,7 @@ func TestTenantContext_XTenantIDHeader(t *testing.T) {
 	cfg := testConfig()
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	r.Use(TenantContext(jwtkeys.NewHMAC(cfg.JWTSecret)))
+	r.Use(TenantContext(jwtkeys.NewHMAC(cfg.JWTSecret), nil))
 	r.GET("/api/resource", func(c *gin.Context) {
 		id, err := GetTenantID(c)
 		if err != nil {
@@ -188,7 +188,7 @@ func TestTenantContext_MissingTenant_ReturnsUnauthorized(t *testing.T) {
 	cfg := testConfig()
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	r.Use(TenantContext(jwtkeys.NewHMAC(cfg.JWTSecret)))
+	r.Use(TenantContext(jwtkeys.NewHMAC(cfg.JWTSecret), nil))
 	r.GET("/api/resource", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
@@ -207,7 +207,7 @@ func TestTenantContext_JWTExtractsTenant(t *testing.T) {
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	r.Use(TenantContext(jwtkeys.NewHMAC(cfg.JWTSecret)))
+	r.Use(TenantContext(jwtkeys.NewHMAC(cfg.JWTSecret), nil))
 	r.GET("/api/resource", func(c *gin.Context) {
 		id, err := GetTenantID(c)
 		if err != nil {

@@ -30,6 +30,7 @@ security:
   access_token_duration: 3600  # seconds
   refresh_token_duration: 2592000  # seconds (30 days)
   id_token_duration: 3600  # seconds
+  session_duration: 86400  # seconds; SSO session lifetime (re-login after this)
   authorization_code_duration: 600  # seconds (10 minutes)
 
 # CORS configuration

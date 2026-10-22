@@ -33,7 +33,7 @@ func newOIDCRouter(
 	logger := logrus.New()
 	logger.SetLevel(logrus.FatalLevel)
 
-	handler := handlers.NewOAuthHandler(utils.CreateTestConfig(), mockTenant, mockUser, mockClient, mockAuth, logger)
+	handler := handlers.NewOAuthHandler(utils.CreateTestConfig(), mockTenant, mockUser, mockClient, mockAuth, preConsented(), logger)
 	r := gin.New()
 	r.SetFuncMap(template.FuncMap{
 		"contains": func(s, substr string) bool { return strings.Contains(s, substr) },
@@ -138,7 +138,7 @@ func TestHandleUserInfo_ValidToken_ReturnsClaims(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	logger := logrus.New()
 	logger.SetLevel(logrus.FatalLevel)
-	handler := handlers.NewOAuthHandler(utils.CreateTestConfig(), new(MockTenantService), new(MockUserService), new(MockClientService), mockAuth, logger)
+	handler := handlers.NewOAuthHandler(utils.CreateTestConfig(), new(MockTenantService), new(MockUserService), new(MockClientService), mockAuth, preConsented(), logger)
 
 	r := gin.New()
 	// Pre-inject tenant context (simulates TenantContext middleware with JWT)
@@ -167,7 +167,7 @@ func TestHandleUserInfo_MissingToken_Returns401(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	logger := logrus.New()
 	logger.SetLevel(logrus.FatalLevel)
-	handler := handlers.NewOAuthHandler(utils.CreateTestConfig(), new(MockTenantService), new(MockUserService), new(MockClientService), new(MockAuthService), logger)
+	handler := handlers.NewOAuthHandler(utils.CreateTestConfig(), new(MockTenantService), new(MockUserService), new(MockClientService), new(MockAuthService), preConsented(), logger)
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {

@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 
 	"shieldgate/config"
 	"shieldgate/internal/middleware"
@@ -20,12 +19,13 @@ import (
 
 // OAuthHandler handles OAuth 2.0 authorization flows
 type OAuthHandler struct {
-	cfg           *config.Config
-	tenantService services.TenantService
-	userService   services.UserService
-	clientService services.ClientService
-	authService   services.AuthService
-	logger        *logrus.Logger
+	cfg            *config.Config
+	tenantService  services.TenantService
+	userService    services.UserService
+	clientService  services.ClientService
+	authService    services.AuthService
+	sessionService services.SessionService
+	logger         *logrus.Logger
 }
 
 // NewOAuthHandler creates a new OAuth handler
@@ -35,15 +35,17 @@ func NewOAuthHandler(
 	userService services.UserService,
 	clientService services.ClientService,
 	authService services.AuthService,
+	sessionService services.SessionService,
 	logger *logrus.Logger,
 ) *OAuthHandler {
 	return &OAuthHandler{
-		cfg:           cfg,
-		tenantService: tenantService,
-		userService:   userService,
-		clientService: clientService,
-		authService:   authService,
-		logger:        logger,
+		cfg:            cfg,
+		tenantService:  tenantService,
+		userService:    userService,
+		clientService:  clientService,
+		authService:    authService,
+		sessionService: sessionService,
+		logger:         logger,
 	}
 }
 
@@ -54,6 +56,9 @@ func (h *OAuthHandler) RegisterRoutes(router *gin.RouterGroup) {
 	{
 		oauth.GET("/authorize", h.HandleAuthorize)
 		oauth.POST("/login", h.HandleLogin)
+		oauth.POST("/consent", h.HandleConsent)
+		oauth.GET("/logout", h.HandleLogout)
+		oauth.POST("/logout", h.HandleLogout)
 		oauth.POST("/token", h.HandleToken)
 		oauth.POST("/introspect", h.HandleIntrospect)
 		oauth.POST("/revoke", h.HandleRevoke)
@@ -74,224 +79,6 @@ func (h *OAuthHandler) RegisterRoutes(router *gin.RouterGroup) {
 	// UserInfo endpoint; OIDC Core §5.3 requires both GET and POST
 	router.GET("/userinfo", h.HandleUserInfo)
 	router.POST("/userinfo", h.HandleUserInfo)
-}
-
-// HandleAuthorize handles OAuth authorization requests (GET)
-func (h *OAuthHandler) HandleAuthorize(c *gin.Context) {
-	// Tenant context must be established by TenantContext middleware.
-	// For OAuth endpoints, provide X-Tenant-ID header or use a valid JWT with tenant_id claim.
-	tenantID, err := middleware.GetTenantID(c)
-	if err != nil {
-		h.logger.WithError(err).Warn("missing tenant context on authorize endpoint")
-		h.renderError(c, "invalid_request", "Tenant context required — provide X-Tenant-ID header", "", "")
-		return
-	}
-
-	// Parse authorization request
-	req := &models.AuthorizeRequest{
-		ResponseType:        c.Query("response_type"),
-		ClientID:            c.Query("client_id"),
-		RedirectURI:         c.Query("redirect_uri"),
-		Scope:               c.Query("scope"),
-		State:               c.Query("state"),
-		CodeChallenge:       c.Query("code_challenge"),
-		CodeChallengeMethod: c.Query("code_challenge_method"),
-		Nonce:               c.Query("nonce"),
-	}
-
-	// Until the client and redirect URI are validated, errors must be shown
-	// to the user rather than redirected (RFC 6749 §4.1.2.1) — otherwise the
-	// endpoint becomes an open redirector
-	client, err := h.clientService.GetByClientID(c.Request.Context(), tenantID, req.ClientID)
-	if err != nil {
-		h.logger.WithError(err).WithField("client_id", req.ClientID).Error("client validation failed")
-		h.renderError(c, "invalid_client", "Invalid client", "", "")
-		return
-	}
-
-	if err := h.clientService.ValidateRedirectURI(c.Request.Context(), client, req.RedirectURI); err != nil {
-		h.logger.WithError(err).WithField("redirect_uri", req.RedirectURI).Error("invalid redirect URI")
-		h.renderError(c, "invalid_request", "Invalid redirect URI", "", "")
-		return
-	}
-
-	// From here on the redirect URI is trusted, so errors go back to the client
-	if err := req.Validate(); err != nil {
-		h.logger.WithError(err).Warn("invalid authorization request")
-		h.renderError(c, "unsupported_response_type", err.Error(), req.RedirectURI, req.State)
-		return
-	}
-	if len(req.Nonce) > maxNonceLength {
-		h.renderError(c, "invalid_request", "nonce is too long", req.RedirectURI, req.State)
-		return
-	}
-
-	// The client must be registered for the authorization code grant
-	if !client.HasGrantType("authorization_code") {
-		h.renderError(c, "unauthorized_client", "Client is not authorized for the authorization_code grant", req.RedirectURI, req.State)
-		return
-	}
-
-	// Requested scopes must be within the client's registered scopes
-	if _, err := services.ValidateScopeForClient(client, req.Scope); err != nil {
-		h.renderError(c, "invalid_scope", "Requested scope is not allowed for this client", req.RedirectURI, req.State)
-		return
-	}
-
-	// Validate PKCE for public clients
-	if client.IsPublic {
-		if req.CodeChallenge == "" || req.CodeChallengeMethod == "" {
-			h.renderError(c, "invalid_request", "PKCE required for public clients", req.RedirectURI, req.State)
-			return
-		}
-		if req.CodeChallengeMethod != "S256" {
-			h.renderError(c, "invalid_request", "Only S256 code challenge method supported", req.RedirectURI, req.State)
-			return
-		}
-	}
-
-	// Get tenant info for display
-	tenant, _ := h.tenantService.GetByID(c.Request.Context(), tenantID)
-
-	// Render login page
-	h.renderLoginPage(c, req, client, tenant)
-}
-
-// HandleLogin handles login form submission
-func (h *OAuthHandler) HandleLogin(c *gin.Context) {
-	tenantID, err := middleware.GetTenantID(c)
-	if err != nil {
-		h.logger.WithError(err).Warn("missing tenant context on login endpoint")
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error":             "invalid_request",
-			"error_description": "Tenant context required — provide X-Tenant-ID header",
-		})
-		return
-	}
-
-	// Get form data
-	username := c.PostForm("username")
-	password := c.PostForm("password")
-	clientID := c.PostForm("client_id")
-	redirectURI := c.PostForm("redirect_uri")
-	scope := c.PostForm("scope")
-	state := c.PostForm("state")
-	codeChallenge := c.PostForm("code_challenge")
-	codeChallengeMethod := c.PostForm("code_challenge_method")
-	nonce := c.PostForm("nonce")
-
-	// CSRF protection: the hidden form token must match the signed cookie
-	cookieToken, _ := c.Cookie(csrfCookieName)
-	if !validateCSRFToken(h.cfg.JWTSecret, c.PostForm("csrf_token"), cookieToken) {
-		h.logger.WithField("tenant_id", tenantID).Warn("CSRF validation failed on login endpoint")
-		h.renderError(c, "invalid_request", "Invalid or missing CSRF token — please retry the authorization flow", "", "")
-		return
-	}
-
-	// Validate credentials
-	user, err := h.authenticateUser(c.Request.Context(), tenantID, username, password)
-	if err != nil {
-		h.logger.WithError(err).WithFields(logrus.Fields{
-			"tenant_id": tenantID,
-			"username":  username,
-		}).Warn("authentication failed")
-
-		// Re-render login page with error
-		client, _ := h.clientService.GetByClientID(c.Request.Context(), tenantID, clientID)
-		tenant, _ := h.tenantService.GetByID(c.Request.Context(), tenantID)
-
-		req := &models.AuthorizeRequest{
-			ClientID:            clientID,
-			RedirectURI:         redirectURI,
-			Scope:               scope,
-			State:               state,
-			CodeChallenge:       codeChallenge,
-			CodeChallengeMethod: codeChallengeMethod,
-			Nonce:               nonce,
-		}
-
-		h.renderLoginPage(c, req, client, tenant, "Invalid email or password")
-		return
-	}
-
-	// Load client and validate redirect URI (client_id is the public identifier, not UUID)
-	client, err := h.clientService.GetByClientID(c.Request.Context(), tenantID, clientID)
-	if err != nil {
-		h.logger.WithError(err).WithFields(logrus.Fields{
-			"tenant_id": tenantID,
-			"client_id": clientID,
-		}).Error("client validation failed during login")
-		h.renderError(c, "invalid_client", "Invalid client", "", "")
-		return
-	}
-
-	if err := h.clientService.ValidateRedirectURI(c.Request.Context(), client, redirectURI); err != nil {
-		h.logger.WithError(err).WithField("redirect_uri", redirectURI).Error("invalid redirect URI during login")
-		h.renderError(c, "invalid_request", "Invalid redirect URI", "", "")
-		return
-	}
-
-	// Re-validate grant type and scope — form values are client-controlled
-	if !client.HasGrantType("authorization_code") {
-		h.renderError(c, "unauthorized_client", "Client is not authorized for the authorization_code grant", redirectURI, state)
-		return
-	}
-	grantedScope, err := services.ValidateScopeForClient(client, scope)
-	if err != nil {
-		h.renderError(c, "invalid_scope", "Requested scope is not allowed for this client", redirectURI, state)
-		return
-	}
-	scope = grantedScope
-	if len(nonce) > maxNonceLength {
-		h.renderError(c, "invalid_request", "nonce is too long", redirectURI, state)
-		return
-	}
-
-	// Generate authorization code. Without server-side sessions the user has
-	// just authenticated, so auth_time is now.
-	authCode, err := h.authService.GenerateAuthorizationCode(
-		c.Request.Context(),
-		tenantID,
-		client.ID,
-		user.ID,
-		redirectURI,
-		scope,
-		codeChallenge,
-		codeChallengeMethod,
-		nonce,
-		time.Now(),
-	)
-	if err != nil {
-		h.logger.WithError(err).Error("failed to generate authorization code")
-		h.renderError(c, "server_error", "Internal server error", redirectURI, state)
-		return
-	}
-
-	// Build redirect URL
-	redirectURL, err := url.Parse(redirectURI)
-	if err != nil {
-		h.logger.WithError(err).Error("invalid redirect URI")
-		h.renderError(c, "invalid_request", "Invalid redirect URI", "", "")
-		return
-	}
-
-	query := redirectURL.Query()
-	query.Set("code", authCode.Code)
-	if state != "" {
-		query.Set("state", state)
-	}
-	// RFC 9207: identify the issuer so clients can detect mix-up attacks
-	query.Set("iss", h.cfg.ServerURL)
-	redirectURL.RawQuery = query.Encode()
-
-	h.logger.WithFields(logrus.Fields{
-		"tenant_id": tenantID,
-		"user_id":   user.ID,
-		"client_id": clientID,
-	}).Info("authorization code generated successfully")
-
-	// Redirect to client
-	c.Redirect(http.StatusFound, redirectURL.String())
 }
 
 // HandleToken handles token exchange requests
@@ -646,50 +433,6 @@ func (h *OAuthHandler) HandleRevoke(c *gin.Context) {
 
 func (h *OAuthHandler) authenticateUser(ctx context.Context, tenantID uuid.UUID, username, password string) (*models.User, error) {
 	return h.userService.Authenticate(ctx, tenantID, username, password)
-}
-
-func (h *OAuthHandler) renderLoginPage(c *gin.Context, req *models.AuthorizeRequest, client *models.Client, tenant *models.Tenant, errorMsg ...string) {
-	// Issue a CSRF token: signed value in a hidden form field, mirrored in an
-	// HttpOnly cookie (double-submit) — validated by HandleLogin
-	csrfToken, err := newCSRFToken(h.cfg.JWTSecret)
-	if err != nil {
-		h.logger.WithError(err).Error("failed to generate CSRF token")
-		h.renderError(c, "server_error", "Internal server error", "", "")
-		return
-	}
-	secureCookie := strings.HasPrefix(h.cfg.ServerURL, "https://")
-	c.SetSameSite(http.SameSiteLaxMode)
-	c.SetCookie(csrfCookieName, csrfToken, 600, "/oauth", "", secureCookie, true)
-
-	clientName := ""
-	if client != nil {
-		clientName = client.Name
-	}
-
-	data := gin.H{
-		"client_id":             req.ClientID,
-		"client_name":           clientName,
-		"redirect_uri":          req.RedirectURI,
-		"scope":                 req.Scope,
-		"state":                 req.State,
-		"code_challenge":        req.CodeChallenge,
-		"code_challenge_method": req.CodeChallengeMethod,
-		"nonce":                 req.Nonce,
-		"response_type":         "code",
-		"csrf_token":            csrfToken,
-	}
-
-	if tenant != nil {
-		data["tenant_info"] = gin.H{
-			"name": tenant.Name,
-		}
-	}
-
-	if len(errorMsg) > 0 {
-		data["error"] = errorMsg[0]
-	}
-
-	c.HTML(http.StatusOK, "login.html", data)
 }
 
 // renderError shows an error page, or, when redirectURI is set, redirects

@@ -65,9 +65,11 @@ func (s *clientServiceImpl) Create(ctx context.Context, tenantID uuid.UUID, req 
 		ClientSecret: secretHash,
 		Name:         req.Name,
 		RedirectURIs: models.StringArray(req.RedirectURIs),
-		GrantTypes:   models.StringArray(req.GrantTypes),
-		Scopes:       models.StringArray(req.Scopes),
-		IsPublic:     req.IsPublic,
+		// Non-nil so the NOT NULL jsonb column gets [] rather than NULL
+		PostLogoutRedirectURIs: append(models.StringArray{}, req.PostLogoutRedirectURIs...),
+		GrantTypes:             models.StringArray(req.GrantTypes),
+		Scopes:                 models.StringArray(req.Scopes),
+		IsPublic:               req.IsPublic,
 	}
 
 	if err := s.repos.Client.Create(ctx, client); err != nil {
@@ -124,6 +126,9 @@ func (s *clientServiceImpl) Update(ctx context.Context, tenantID, clientID uuid.
 	}
 	if len(req.RedirectURIs) > 0 {
 		client.RedirectURIs = models.StringArray(req.RedirectURIs)
+	}
+	if req.PostLogoutRedirectURIs != nil {
+		client.PostLogoutRedirectURIs = models.StringArray(req.PostLogoutRedirectURIs)
 	}
 	if len(req.GrantTypes) > 0 {
 		client.GrantTypes = models.StringArray(req.GrantTypes)

@@ -113,6 +113,9 @@ type AuthService interface {
 	GenerateIDToken(ctx context.Context, user *models.User, params *models.IDTokenParams) (string, error)
 	GetUserInfo(ctx context.Context, tenantID uuid.UUID, accessToken string) (*models.UserInfo, error)
 	GetDiscoveryDocument(ctx context.Context) (*models.OpenIDConfiguration, error)
+	// ParseIDTokenHint verifies an ID token we issued, accepting expired
+	// ones, for use as an id_token_hint at logout
+	ParseIDTokenHint(ctx context.Context, idToken string) (*models.IDTokenClaims, error)
 	// GetJWKS returns the public signing keys (RFC 7517)
 	GetJWKS(ctx context.Context) (*jwtkeys.JWKSet, error)
 
@@ -129,7 +132,28 @@ type Services struct {
 	Role       RoleService
 	Permission PermissionService
 	Audit      AuditService
+	Session    SessionService
 	Email      EmailService
+}
+
+// SessionService manages single sign-on sessions and remembered consent
+type SessionService interface {
+	// CreateSession starts a session for a user who just authenticated and
+	// returns the token to place in the browser cookie
+	CreateSession(ctx context.Context, tenantID, userID uuid.UUID, ipAddress, userAgent string) (string, *models.Session, error)
+	// GetSession returns the live session for a cookie token, or
+	// models.ErrSessionNotFound if it is unknown or expired
+	GetSession(ctx context.Context, tenantID uuid.UUID, token string) (*models.Session, error)
+	// EndSession deletes the session for a cookie token; unknown tokens are ignored
+	EndSession(ctx context.Context, tenantID uuid.UUID, token string) error
+	// CleanupExpiredSessions deletes sessions past their lifetime
+	CleanupExpiredSessions(ctx context.Context) error
+
+	// HasConsent reports whether the user already granted the client every
+	// scope in scope
+	HasConsent(ctx context.Context, tenantID, userID, clientID uuid.UUID, scope string) (bool, error)
+	// GrantConsent adds scope to what the user has granted the client
+	GrantConsent(ctx context.Context, tenantID, userID, clientID uuid.UUID, scope string) error
 }
 
 // RoleService defines the interface for RBAC role management

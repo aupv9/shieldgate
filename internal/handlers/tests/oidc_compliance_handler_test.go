@@ -67,7 +67,7 @@ func newOIDCHandlerFixture(t *testing.T) *oidcHandlerFixture {
 	f.clients.On("ValidateRedirectURI", mock.Anything, f.client, oidcTestRedirectURI).Return(nil)
 	f.clients.On("ValidateRedirectURI", mock.Anything, f.client, mock.Anything).Return(errors.New("redirect_uri not registered"))
 
-	handler := handlers.NewOAuthHandler(utils.CreateTestConfig(), f.tenants, f.users, f.clients, f.auth, logger)
+	handler := handlers.NewOAuthHandler(utils.CreateTestConfig(), f.tenants, f.users, f.clients, f.auth, preConsented(), logger)
 	f.router = gin.New()
 	f.router.SetFuncMap(template.FuncMap{
 		"contains": func(s, substr string) bool { return strings.Contains(s, substr) },
@@ -181,7 +181,7 @@ func TestLogin_NonceFromAuthorizeRequest_ReachesAuthorizationCodeAndRedirectHasI
 		"username": {"a@example.com"}, "password": {"pw-123456"},
 		"client_id": {oidcTestClientID}, "redirect_uri": {oidcTestRedirectURI},
 		"scope": {"openid profile"}, "state": {"st"}, "nonce": {"n-0S6_WzA2Mj"},
-		"csrf_token": {extractCSRFToken(t, page.Body.String())},
+		"response_type": {"code"}, "csrf_token": {extractCSRFToken(t, page.Body.String())},
 	}
 	req := httptest.NewRequest(http.MethodPost, "/oauth/login", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")

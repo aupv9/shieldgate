@@ -95,6 +95,8 @@ type Repositories struct {
 	AccessToken       AccessTokenRepository
 	RefreshToken      RefreshTokenRepository
 	DeviceCode        DeviceCodeRepository
+	Session           SessionRepository
+	Consent           ConsentRepository
 	Role              RoleRepository
 	Permission        PermissionRepository
 	UserRole          UserRoleRepository
@@ -104,6 +106,24 @@ type Repositories struct {
 	EmailQueue        EmailQueueRepository
 	EmailVerification EmailVerificationRepository
 	PasswordReset     PasswordResetRepository
+}
+
+// SessionRepository defines the interface for SSO session data operations.
+// Sessions are looked up by the hash of the browser's session token.
+type SessionRepository interface {
+	Create(ctx context.Context, session *models.Session) error
+	GetByTokenHash(ctx context.Context, tenantID uuid.UUID, tokenHash string) (*models.Session, error)
+	DeleteByTokenHash(ctx context.Context, tenantID uuid.UUID, tokenHash string) error
+	DeleteByUserID(ctx context.Context, tenantID, userID uuid.UUID) error
+	DeleteExpired(ctx context.Context) error
+}
+
+// ConsentRepository defines the interface for consent data operations.
+// There is at most one consent record per (tenant, user, client).
+type ConsentRepository interface {
+	Get(ctx context.Context, tenantID, userID, clientID uuid.UUID) (*models.Consent, error)
+	Upsert(ctx context.Context, consent *models.Consent) error
+	Delete(ctx context.Context, tenantID, userID, clientID uuid.UUID) error
 }
 
 // RoleRepository defines the interface for role data operations

@@ -293,6 +293,37 @@ func Migrate(db *gorm.DB) error {
 		`ALTER TABLE authorization_codes ADD COLUMN IF NOT EXISTS auth_time TIMESTAMP WITH TIME ZONE`,
 		`ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS auth_time TIMESTAMP WITH TIME ZONE`,
 		`ALTER TABLE device_codes ADD COLUMN IF NOT EXISTS auth_time TIMESTAMP WITH TIME ZONE`,
+
+		// SSO sessions: the cookie holds a random token, only its hash is stored
+		`CREATE TABLE IF NOT EXISTS sessions (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL,
+			user_id UUID NOT NULL,
+			token_hash VARCHAR(255) NOT NULL,
+			auth_time TIMESTAMP WITH TIME ZONE NOT NULL,
+			ip_address VARCHAR(45),
+			user_agent TEXT,
+			expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions(token_hash)`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_tenant_user ON sessions(tenant_id, user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at)`,
+
+		// Consent: one record per (tenant, user, client) holding granted scopes
+		`CREATE TABLE IF NOT EXISTS consents (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL,
+			user_id UUID NOT NULL,
+			client_id UUID NOT NULL,
+			scope TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+			updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_consents_tenant_user_client ON consents(tenant_id, user_id, client_id)`,
+
+		// RP-initiated logout redirect allow-list
+		`ALTER TABLE clients ADD COLUMN IF NOT EXISTS post_logout_redirect_uris JSONB NOT NULL DEFAULT '[]'`,
 	}
 
 	// Execute each migration

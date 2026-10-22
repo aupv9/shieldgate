@@ -271,6 +271,14 @@ func (m *MockAuthService) GetDiscoveryDocument(ctx context.Context) (*models.Ope
 	return args.Get(0).(*models.OpenIDConfiguration), args.Error(1)
 }
 
+func (m *MockAuthService) ParseIDTokenHint(ctx context.Context, idToken string) (*models.IDTokenClaims, error) {
+	args := m.Called(ctx, idToken)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*models.IDTokenClaims), args.Error(1)
+}
+
 func (m *MockAuthService) GetJWKS(ctx context.Context) (*jwtkeys.JWKSet, error) {
 	args := m.Called(ctx)
 	return args.Get(0).(*jwtkeys.JWKSet), args.Error(1)
@@ -299,6 +307,7 @@ func TestOAuthHandler_HandleAuthorize_Success(t *testing.T) {
 		mockUserService,
 		mockClientService,
 		mockAuthService,
+		preConsented(),
 		logger,
 	)
 
@@ -377,6 +386,7 @@ func TestOAuthHandler_HandleLogin_Success(t *testing.T) {
 		mockUserService,
 		mockClientService,
 		mockAuthService,
+		preConsented(),
 		logger,
 	)
 
@@ -458,6 +468,7 @@ func TestOAuthHandler_HandleLogin_Success(t *testing.T) {
 	formData.Set("state", "xyz")
 	formData.Set("code_challenge", "test-challenge")
 	formData.Set("code_challenge_method", "S256")
+	formData.Set("response_type", "code")
 	formData.Set("csrf_token", csrfToken)
 
 	req := httptest.NewRequest("POST", "/oauth/login", strings.NewReader(formData.Encode()))
@@ -497,6 +508,7 @@ func TestOAuthHandler_HandleLogin_MissingCSRFToken_Rejected(t *testing.T) {
 		mockUserService,
 		mockClientService,
 		mockAuthService,
+		preConsented(),
 		logger,
 	)
 
@@ -569,6 +581,7 @@ func TestOAuthHandler_HandleToken_AuthorizationCodeGrant_Success(t *testing.T) {
 		mockUserService,
 		mockClientService,
 		mockAuthService,
+		preConsented(),
 		logger,
 	)
 
