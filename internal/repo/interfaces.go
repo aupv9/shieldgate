@@ -106,6 +106,21 @@ type Repositories struct {
 	EmailQueue        EmailQueueRepository
 	EmailVerification EmailVerificationRepository
 	PasswordReset     PasswordResetRepository
+	Idempotency       IdempotencyRepository
+}
+
+// IdempotencyRepository stores Idempotency-Key records
+type IdempotencyRepository interface {
+	// Begin inserts record unless a live record holds the same (tenant,
+	// principal, key). An expired record, or one left in progress since
+	// before staleBefore (its request died), is replaced. It reports whether
+	// record was stored; if not, existing is the record holding the key.
+	Begin(ctx context.Context, record *models.IdempotencyKey, staleBefore time.Time) (stored bool, existing *models.IdempotencyKey, err error)
+	// Complete saves the response of the request that holds id
+	Complete(ctx context.Context, id uuid.UUID, statusCode int, contentType string, body []byte) error
+	// Delete releases a key so the request can be retried
+	Delete(ctx context.Context, id uuid.UUID) error
+	DeleteExpired(ctx context.Context) error
 }
 
 // SessionRepository defines the interface for SSO session data operations.

@@ -15,6 +15,7 @@ import (
 // Custom error types for business logic
 var (
 	ErrResourceNotFound        = errors.New("resource not found")
+	ErrResourceConflict        = errors.New("resource conflict")
 	ErrDuplicateResource       = errors.New("duplicate resource")
 	ErrBusinessRuleViolation   = errors.New("business rule violation")
 	ErrTenantNotFound          = errors.New("tenant not found")
@@ -977,6 +978,29 @@ type EmailQueue struct {
 
 	// Relationships
 	User *User `json:"user,omitempty" gorm:"foreignKey:UserID"`
+}
+
+// IdempotencyKey records a management API POST made with an
+// Idempotency-Key header, so a retry replays the stored response instead of
+// repeating the side effect. StatusCode is 0 while the request is running.
+type IdempotencyKey struct {
+	ID                  uuid.UUID `json:"id" gorm:"type:uuid;primary_key"`
+	TenantID            uuid.UUID `json:"tenant_id" gorm:"type:uuid;not null"`
+	Principal           string    `json:"principal" gorm:"not null;size:255"`
+	Key                 string    `json:"key" gorm:"column:idem_key;not null;size:255"`
+	Method              string    `json:"method" gorm:"not null;size:10"`
+	Path                string    `json:"path" gorm:"not null;size:2048"`
+	RequestHash         string    `json:"-" gorm:"not null;size:64"`
+	StatusCode          int       `json:"status_code" gorm:"not null;default:0"`
+	ResponseContentType string    `json:"-" gorm:"size:255"`
+	ResponseBody        []byte    `json:"-" gorm:"type:bytea"`
+	CreatedAt           time.Time `json:"created_at"`
+	ExpiresAt           time.Time `json:"expires_at" gorm:"not null"`
+}
+
+// InProgress reports whether the original request has not finished yet
+func (k *IdempotencyKey) InProgress() bool {
+	return k.StatusCode == 0
 }
 
 // TableName keeps the singular table name used by the migrations

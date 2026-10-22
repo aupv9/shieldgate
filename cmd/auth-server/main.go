@@ -123,7 +123,7 @@ func main() {
 		}
 	}()
 
-	// Periodically purge expired codes, tokens and SSO sessions
+	// Periodically purge expired codes, tokens, SSO sessions and idempotency keys
 	go func() {
 		ticker := time.NewTicker(15 * time.Minute)
 		defer ticker.Stop()
@@ -139,6 +139,9 @@ func main() {
 				}
 				if err := sessionService.CleanupExpiredSessions(rootCtx); err != nil {
 					logger.WithError(err).Error("Failed to clean up expired sessions")
+				}
+				if err := repos.Idempotency.DeleteExpired(rootCtx); err != nil {
+					logger.WithError(err).Error("Failed to clean up expired idempotency keys")
 				}
 			}
 		}
@@ -181,7 +184,7 @@ func main() {
 	auditHandler := handlers.NewAuditHandler(auditService, logger)
 
 	// Setup routes
-	setupRoutes(cfg, db, redisClient, router, tenantHandler, userHandler, accountHandler, clientHandler, oauthHandler, rbacHandler, auditHandler, authService, authz, jwtKeys)
+	setupRoutes(cfg, db, redisClient, router, repos.Idempotency, tenantHandler, userHandler, accountHandler, clientHandler, oauthHandler, rbacHandler, auditHandler, authService, authz, jwtKeys)
 
 	// Create HTTP server
 	server := &http.Server{
@@ -250,6 +253,7 @@ func setupRoutes(
 	db *gorm.DB,
 	redisClient *database.RedisClient,
 	router *gin.Engine,
+	idempotency middleware.IdempotencyStore,
 	tenantHandler *handlers.TenantHandler,
 	userHandler *handlers.UserHandler,
 	accountHandler *handlers.AccountHandler,
@@ -311,6 +315,8 @@ func setupRoutes(
 	// Management API endpoints (versioned)
 	api := router.Group("/v1")
 	api.Use(middleware.RequireAuth(jwtKeys, authService)) // Require authentication + revocation check for management APIs
+	// POSTs carrying an Idempotency-Key are safe to retry for 24 hours
+	api.Use(middleware.Idempotency(idempotency, 24*time.Hour))
 	{
 		// Every route below adds its own RBAC check via authz
 
