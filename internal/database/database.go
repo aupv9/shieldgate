@@ -421,6 +421,24 @@ func Migrate(db *gorm.DB) error {
 		`DELETE FROM password_resets WHERE token_hash IS NULL`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_password_resets_token_hash ON password_resets(token_hash)`,
 		`CREATE INDEX IF NOT EXISTS idx_password_resets_tenant_user ON password_resets(tenant_id, user_id, created_at)`,
+
+		// Idempotency-Key records for management API POSTs
+		`CREATE TABLE IF NOT EXISTS idempotency_keys (
+			id UUID PRIMARY KEY,
+			tenant_id UUID NOT NULL,
+			principal VARCHAR(255) NOT NULL,
+			idem_key VARCHAR(255) NOT NULL,
+			method VARCHAR(10) NOT NULL,
+			path VARCHAR(2048) NOT NULL,
+			request_hash VARCHAR(64) NOT NULL,
+			status_code INTEGER NOT NULL DEFAULT 0,
+			response_content_type VARCHAR(255),
+			response_body BYTEA,
+			created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+			expires_at TIMESTAMP WITH TIME ZONE NOT NULL
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_idempotency_keys_scope ON idempotency_keys(tenant_id, principal, idem_key)`,
+		`CREATE INDEX IF NOT EXISTS idx_idempotency_keys_expires_at ON idempotency_keys(expires_at)`,
 	}
 
 	// Execute each migration

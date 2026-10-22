@@ -68,8 +68,8 @@ func (h *TenantHandler) CreateTenant(c *gin.Context) {
 		return
 	}
 
-	// TODO: Check idempotency key
-	// idempotencyKey := c.GetHeader("Idempotency-Key")
+	// Retries with an Idempotency-Key header are handled by the
+	// middleware.Idempotency applied to the management API
 
 	tenant, err := h.tenantService.Create(c.Request.Context(), &req)
 	if err != nil {
