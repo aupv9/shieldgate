@@ -96,18 +96,9 @@ func main() {
 
 	// Initialize services
 	auditService := services.NewAuditService(repos.AuditLog, logger)
-	emailService := services.NewEmailService(
-		repos.EmailTemplate,
-		repos.EmailQueue,
-		repos.EmailVerification,
-		repos.PasswordReset,
-		repos.User,
-		auditService,
-		cfg,
-		logger,
-	)
+	emailService := services.NewEmailService(repos.EmailTemplate, repos.EmailQueue, cfg, logger)
 	tenantService := services.NewTenantService(repos, logger)
-	userService := services.NewUserService(repos, logger)
+	userService := services.NewUserService(repos, emailService, cfg.ServerURL, logger)
 	clientService := services.NewClientService(repos, logger)
 	authService := services.NewAuthService(repos, cfg, jwtKeys, logger)
 	sessionService := services.NewSessionService(repos.Session, repos.Consent, cfg.SessionDuration, logger)
@@ -183,13 +174,14 @@ func main() {
 	// Initialize handlers
 	tenantHandler := handlers.NewTenantHandler(tenantService, logger)
 	userHandler := handlers.NewUserHandler(userService, logger)
+	accountHandler := handlers.NewAccountHandler(cfg, userService, logger)
 	clientHandler := handlers.NewClientHandler(clientService, logger)
 	oauthHandler := handlers.NewOAuthHandler(cfg, tenantService, userService, clientService, authService, sessionService, logger)
 	rbacHandler := handlers.NewRBACHandler(roleService, permissionService, auditService, logger)
 	auditHandler := handlers.NewAuditHandler(auditService, logger)
 
 	// Setup routes
-	setupRoutes(cfg, db, redisClient, router, tenantHandler, userHandler, clientHandler, oauthHandler, rbacHandler, auditHandler, authService, authz, jwtKeys)
+	setupRoutes(cfg, db, redisClient, router, tenantHandler, userHandler, accountHandler, clientHandler, oauthHandler, rbacHandler, auditHandler, authService, authz, jwtKeys)
 
 	// Create HTTP server
 	server := &http.Server{
@@ -260,6 +252,7 @@ func setupRoutes(
 	router *gin.Engine,
 	tenantHandler *handlers.TenantHandler,
 	userHandler *handlers.UserHandler,
+	accountHandler *handlers.AccountHandler,
 	clientHandler *handlers.ClientHandler,
 	oauthHandler *handlers.OAuthHandler,
 	rbacHandler *handlers.RBACHandler,
@@ -311,6 +304,9 @@ func setupRoutes(
 
 	// OAuth 2.0 and OpenID Connect endpoints (no versioning per spec)
 	oauthHandler.RegisterRoutes(router.Group(""))
+
+	// Self-service pages opened from account emails
+	accountHandler.RegisterRoutes(router.Group(""))
 
 	// Management API endpoints (versioned)
 	api := router.Group("/v1")

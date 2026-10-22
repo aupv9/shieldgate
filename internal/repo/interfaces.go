@@ -192,6 +192,8 @@ type EmailTemplateRepository interface {
 type EmailQueueRepository interface {
 	Create(ctx context.Context, email *models.EmailQueue) error
 	GetByID(ctx context.Context, tenantID, emailID uuid.UUID) (*models.EmailQueue, error)
+	// GetPendingEmails claims up to limit due emails by moving them to
+	// "sending", so concurrent workers never send the same email twice
 	GetPendingEmails(ctx context.Context, limit int) ([]*models.EmailQueue, error)
 	Update(ctx context.Context, email *models.EmailQueue) error
 	Delete(ctx context.Context, tenantID, emailID uuid.UUID) error
@@ -199,22 +201,29 @@ type EmailQueueRepository interface {
 	GetFailedEmails(ctx context.Context, tenantID uuid.UUID, maxAttempts int) ([]*models.EmailQueue, error)
 }
 
-// EmailVerificationRepository defines the interface for email verification data operations
+// EmailVerificationRepository stores email verification codes by hash
 type EmailVerificationRepository interface {
 	Create(ctx context.Context, verification *models.EmailVerification) error
-	GetByCode(ctx context.Context, tenantID uuid.UUID, code string) (*models.EmailVerification, error)
-	GetByUserID(ctx context.Context, tenantID, userID uuid.UUID) (*models.EmailVerification, error)
-	Update(ctx context.Context, verification *models.EmailVerification) error
-	Delete(ctx context.Context, tenantID uuid.UUID, code string) error
+	GetByCodeHash(ctx context.Context, tenantID uuid.UUID, codeHash string) (*models.EmailVerification, error)
+	// MarkVerified sets verified_at if it is still unset and reports whether
+	// this call did so, making each code single-use under concurrency
+	MarkVerified(ctx context.Context, id uuid.UUID) (bool, error)
+	// DeletePendingByUserID removes the user's unverified codes
+	DeletePendingByUserID(ctx context.Context, tenantID, userID uuid.UUID) error
 	DeleteExpired(ctx context.Context) error
 }
 
-// PasswordResetRepository defines the interface for password reset data operations
+// PasswordResetRepository stores password reset tokens by hash
 type PasswordResetRepository interface {
 	Create(ctx context.Context, reset *models.PasswordReset) error
-	GetByToken(ctx context.Context, tenantID uuid.UUID, token string) (*models.PasswordReset, error)
-	GetByUserID(ctx context.Context, tenantID, userID uuid.UUID) ([]*models.PasswordReset, error)
-	Update(ctx context.Context, reset *models.PasswordReset) error
-	Delete(ctx context.Context, tenantID uuid.UUID, token string) error
+	GetByTokenHash(ctx context.Context, tenantID uuid.UUID, tokenHash string) (*models.PasswordReset, error)
+	// MarkUsed sets used_at if it is still unset and reports whether this
+	// call did so, making each token single-use under concurrency
+	MarkUsed(ctx context.Context, id uuid.UUID) (bool, error)
+	// CountSince counts the user's reset requests created after since
+	CountSince(ctx context.Context, tenantID, userID uuid.UUID, since time.Time) (int64, error)
+	// RevokeUnusedByUserID marks the user's outstanding reset tokens used.
+	// Rows are kept so CountSince still sees them.
+	RevokeUnusedByUserID(ctx context.Context, tenantID, userID uuid.UUID) error
 	DeleteExpired(ctx context.Context) error
 }

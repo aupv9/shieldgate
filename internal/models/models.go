@@ -45,6 +45,7 @@ var (
 	ErrEmailNotVerified        = errors.New("email not verified")
 	ErrInvalidVerificationCode = errors.New("invalid verification code")
 	ErrVerificationExpired     = errors.New("verification code expired")
+	ErrEmailAlreadyVerified    = errors.New("email already verified")
 	ErrPKCEVerificationFailed  = errors.New("pkce verification failed")
 	ErrAuthCodeAlreadyUsed     = errors.New("authorization code already used")
 	ErrUnauthorizedClient      = errors.New("client is not authorized for this grant type")
@@ -978,33 +979,34 @@ type EmailQueue struct {
 	User *User `json:"user,omitempty" gorm:"foreignKey:UserID"`
 }
 
-// EmailVerification represents an email verification record
+// TableName keeps the singular table name used by the migrations
+func (EmailQueue) TableName() string {
+	return "email_queue"
+}
+
+// EmailVerification is a pending email-ownership check. The link sent to
+// the user carries a random code; only its SHA-256 hash is stored.
 type EmailVerification struct {
 	ID         uuid.UUID  `json:"id" gorm:"type:uuid;primary_key;default:gen_random_uuid()"`
 	TenantID   uuid.UUID  `json:"tenant_id" gorm:"type:uuid;not null;index"`
-	UserID     uuid.UUID  `json:"user_id" gorm:"type:uuid;not null;index:idx_email_verifications_user_id"`
-	Email      string     `json:"email" gorm:"not null;size:255;index"`
-	Code       string     `json:"code" gorm:"not null;size:255;uniqueIndex"`
-	ExpiresAt  time.Time  `json:"expires_at" gorm:"not null;index"`
+	UserID     uuid.UUID  `json:"user_id" gorm:"type:uuid;not null;index"`
+	Email      string     `json:"email" gorm:"not null;size:255"`
+	CodeHash   string     `json:"-" gorm:"size:255;uniqueIndex"`
+	ExpiresAt  time.Time  `json:"expires_at" gorm:"not null"`
 	VerifiedAt *time.Time `json:"verified_at"`
 	CreatedAt  time.Time  `json:"created_at" gorm:"autoCreateTime"`
-
-	// Relationships
-	User User `json:"user,omitempty" gorm:"foreignKey:UserID"`
 }
 
-// PasswordReset represents a password reset request
+// PasswordReset is a single-use password reset grant. The link sent to the
+// user carries a random token; only its SHA-256 hash is stored.
 type PasswordReset struct {
 	ID        uuid.UUID  `json:"id" gorm:"type:uuid;primary_key;default:gen_random_uuid()"`
 	TenantID  uuid.UUID  `json:"tenant_id" gorm:"type:uuid;not null;index"`
-	UserID    uuid.UUID  `json:"user_id" gorm:"type:uuid;not null;index:idx_password_resets_user_id"`
-	Token     string     `json:"token" gorm:"not null;size:255;uniqueIndex"`
-	ExpiresAt time.Time  `json:"expires_at" gorm:"not null;index"`
+	UserID    uuid.UUID  `json:"user_id" gorm:"type:uuid;not null;index"`
+	TokenHash string     `json:"-" gorm:"size:255;uniqueIndex"`
+	ExpiresAt time.Time  `json:"expires_at" gorm:"not null"`
 	UsedAt    *time.Time `json:"used_at"`
 	CreatedAt time.Time  `json:"created_at" gorm:"autoCreateTime"`
-
-	// Relationships
-	User User `json:"user,omitempty" gorm:"foreignKey:UserID"`
 }
 
 // Request/Response Models for new features
@@ -1093,12 +1095,12 @@ type AuditLogQuery struct {
 
 // IsExpired checks if the email verification is expired
 func (ev *EmailVerification) IsExpired() bool {
-	return time.Now().After(ev.ExpiresAt)
+	return !time.Now().Before(ev.ExpiresAt)
 }
 
 // IsExpired checks if the password reset is expired
 func (pr *PasswordReset) IsExpired() bool {
-	return time.Now().After(pr.ExpiresAt)
+	return !time.Now().Before(pr.ExpiresAt)
 }
 
 // IsUsed checks if the password reset has been used

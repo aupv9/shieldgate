@@ -2,10 +2,11 @@ package services
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/tls"
-	"encoding/hex"
+	"errors"
 	"fmt"
+	"html"
+	"mime"
 	"net/smtp"
 	"strings"
 	"time"
@@ -16,41 +17,28 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
-	"golang.org/x/crypto/bcrypt"
 )
 
 // EmailServiceImpl implements the EmailService interface
 type EmailServiceImpl struct {
-	templateRepo      repo.EmailTemplateRepository
-	queueRepo         repo.EmailQueueRepository
-	verificationRepo  repo.EmailVerificationRepository
-	passwordResetRepo repo.PasswordResetRepository
-	userRepo          repo.UserRepository
-	auditService      AuditService
-	cfg               *config.Config
-	logger            *logrus.Logger
+	templateRepo repo.EmailTemplateRepository
+	queueRepo    repo.EmailQueueRepository
+	cfg          *config.Config
+	logger       *logrus.Logger
 }
 
 // NewEmailService creates a new email service instance
 func NewEmailService(
 	templateRepo repo.EmailTemplateRepository,
 	queueRepo repo.EmailQueueRepository,
-	verificationRepo repo.EmailVerificationRepository,
-	passwordResetRepo repo.PasswordResetRepository,
-	userRepo repo.UserRepository,
-	auditService AuditService,
 	cfg *config.Config,
 	logger *logrus.Logger,
 ) EmailService {
 	return &EmailServiceImpl{
-		templateRepo:      templateRepo,
-		queueRepo:         queueRepo,
-		verificationRepo:  verificationRepo,
-		passwordResetRepo: passwordResetRepo,
-		userRepo:          userRepo,
-		auditService:      auditService,
-		cfg:               cfg,
-		logger:            logger,
+		templateRepo: templateRepo,
+		queueRepo:    queueRepo,
+		cfg:          cfg,
+		logger:       logger,
 	}
 }
 
@@ -155,8 +143,13 @@ func (s *EmailServiceImpl) ListTemplates(ctx context.Context, tenantID uuid.UUID
 
 // SendEmail sends an email by adding it to the queue
 func (s *EmailServiceImpl) SendEmail(ctx context.Context, tenantID uuid.UUID, req *models.SendEmailRequest) error {
-	// Get template
+	// A tenant's own template overrides the built-in default
 	template, err := s.templateRepo.GetByName(ctx, tenantID, req.Template)
+	if errors.Is(err, models.ErrResourceNotFound) {
+		if fallback, ok := defaultEmailTemplates[req.Template]; ok {
+			template, err = &fallback, nil
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("failed to get email template: %w", err)
 	}
@@ -165,10 +158,11 @@ func (s *EmailServiceImpl) SendEmail(ctx context.Context, tenantID uuid.UUID, re
 		return fmt.Errorf("email template is not active")
 	}
 
-	// Process template variables
-	subject := s.processTemplate(template.Subject, req.Variables)
-	bodyHTML := s.processTemplate(template.BodyHTML, req.Variables)
-	bodyText := s.processTemplate(template.BodyText, req.Variables)
+	// Variables often carry user-controlled data (names), so they are
+	// HTML-escaped in the HTML body and stripped of line breaks in the subject
+	subject := sanitizeHeader(processTemplate(template.Subject, req.Variables, nil))
+	bodyHTML := processTemplate(template.BodyHTML, req.Variables, html.EscapeString)
+	bodyText := processTemplate(template.BodyText, req.Variables, nil)
 
 	// Create email queue entry
 	email := &models.EmailQueue{
@@ -283,249 +277,24 @@ func (s *EmailServiceImpl) RetryFailedEmails(ctx context.Context, tenantID uuid.
 	return nil
 }
 
-// SendVerificationEmail sends an email verification email
-func (s *EmailServiceImpl) SendVerificationEmail(ctx context.Context, tenantID, userID uuid.UUID) error {
-	// Get user
-	user, err := s.userRepo.GetByID(ctx, tenantID, userID)
-	if err != nil {
-		return fmt.Errorf("failed to get user: %w", err)
-	}
-
-	// Generate verification code
-	code, err := s.generateVerificationCode()
-	if err != nil {
-		return fmt.Errorf("failed to generate verification code: %w", err)
-	}
-
-	// Create verification record
-	verification := &models.EmailVerification{
-		ID:        uuid.New(),
-		TenantID:  tenantID,
-		UserID:    userID,
-		Email:     user.Email,
-		Code:      code,
-		ExpiresAt: time.Now().Add(24 * time.Hour), // 24 hours expiry
-		CreatedAt: time.Now(),
-	}
-
-	if err := s.verificationRepo.Create(ctx, verification); err != nil {
-		return fmt.Errorf("failed to create verification record: %w", err)
-	}
-
-	// Send verification email
-	variables := map[string]string{
-		"user_name":         user.GetFullName(),
-		"verification_code": code,
-		"verification_link": fmt.Sprintf("https://app.shieldgate.com/verify-email?code=%s", code),
-	}
-
-	if err := s.SendTemplateEmail(ctx, tenantID, user.Email, user.GetFullName(), string(models.EmailTemplateEmailVerification), variables, 1); err != nil {
-		return fmt.Errorf("failed to send verification email: %w", err)
-	}
-
-	// Audit log
-	if s.auditService != nil {
-		s.auditService.LogUserAction(ctx, tenantID, userID, models.AuditActionEmailVerified, "user", &userID, true, map[string]interface{}{
-			"email": user.Email,
-		})
-	}
-
-	s.logger.WithFields(logrus.Fields{
-		"tenant_id": tenantID,
-		"user_id":   userID,
-		"email":     user.Email,
-	}).Info("verification email sent")
-
-	return nil
-}
-
-// VerifyEmail verifies an email using the verification code
-func (s *EmailServiceImpl) VerifyEmail(ctx context.Context, tenantID uuid.UUID, code string) (*models.User, error) {
-	// Get verification record
-	verification, err := s.verificationRepo.GetByCode(ctx, tenantID, code)
-	if err != nil {
-		return nil, fmt.Errorf("invalid verification code: %w", err)
-	}
-
-	// Check if already verified
-	if verification.VerifiedAt != nil {
-		return nil, models.ErrInvalidVerificationCode
-	}
-
-	// Check if expired
-	if verification.IsExpired() {
-		return nil, models.ErrVerificationExpired
-	}
-
-	// Get user
-	user, err := s.userRepo.GetByID(ctx, tenantID, verification.UserID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get user: %w", err)
-	}
-
-	// Update user email verification status
-	user.EmailVerified = true
-	if user.Status == models.UserStatusPending {
-		user.Status = models.UserStatusActive
-	}
-	user.UpdatedAt = time.Now()
-
-	if err := s.userRepo.Update(ctx, user); err != nil {
-		return nil, fmt.Errorf("failed to update user: %w", err)
-	}
-
-	// Mark verification as used
-	now := time.Now()
-	verification.VerifiedAt = &now
-	if err := s.verificationRepo.Update(ctx, verification); err != nil {
-		s.logger.WithError(err).Error("failed to update verification record")
-	}
-
-	// Audit log
-	if s.auditService != nil {
-		s.auditService.LogUserAction(ctx, tenantID, verification.UserID, models.AuditActionEmailVerified, "user", &verification.UserID, true, map[string]interface{}{
-			"email": user.Email,
-		})
-	}
-
-	s.logger.WithFields(logrus.Fields{
-		"tenant_id": tenantID,
-		"user_id":   verification.UserID,
-		"email":     user.Email,
-	}).Info("email verified successfully")
-
-	return user, nil
-}
-
-// SendPasswordResetEmail sends a password reset email
-func (s *EmailServiceImpl) SendPasswordResetEmail(ctx context.Context, tenantID uuid.UUID, email string) error {
-	// Get user by email
-	user, err := s.userRepo.GetByEmail(ctx, tenantID, email)
-	if err != nil {
-		// Don't reveal if user exists or not for security
-		s.logger.WithFields(logrus.Fields{
-			"tenant_id": tenantID,
-			"email":     email,
-		}).Warn("password reset requested for non-existent user")
-		return nil
-	}
-
-	// Generate reset token
-	token, err := s.generateResetToken()
-	if err != nil {
-		return fmt.Errorf("failed to generate reset token: %w", err)
-	}
-
-	// Create password reset record
-	reset := &models.PasswordReset{
-		ID:        uuid.New(),
-		TenantID:  tenantID,
-		UserID:    user.ID,
-		Token:     token,
-		ExpiresAt: time.Now().Add(1 * time.Hour), // 1 hour expiry
-		CreatedAt: time.Now(),
-	}
-
-	if err := s.passwordResetRepo.Create(ctx, reset); err != nil {
-		return fmt.Errorf("failed to create password reset record: %w", err)
-	}
-
-	// Send password reset email
-	variables := map[string]string{
-		"user_name":  user.GetFullName(),
-		"reset_link": fmt.Sprintf("https://app.shieldgate.com/reset-password?token=%s", token),
-	}
-
-	if err := s.SendTemplateEmail(ctx, tenantID, user.Email, user.GetFullName(), string(models.EmailTemplatePasswordReset), variables, 1); err != nil {
-		return fmt.Errorf("failed to send password reset email: %w", err)
-	}
-
-	// Audit log
-	if s.auditService != nil {
-		s.auditService.LogUserAction(ctx, tenantID, user.ID, models.AuditActionPasswordChanged, "user", &user.ID, true, map[string]interface{}{
-			"email": user.Email,
-		})
-	}
-
-	s.logger.WithFields(logrus.Fields{
-		"tenant_id": tenantID,
-		"user_id":   user.ID,
-		"email":     user.Email,
-	}).Info("password reset email sent")
-
-	return nil
-}
-
-// ResetPassword resets a user's password using the reset token
-func (s *EmailServiceImpl) ResetPassword(ctx context.Context, tenantID uuid.UUID, token, newPassword string) (*models.User, error) {
-	// Get password reset record
-	reset, err := s.passwordResetRepo.GetByToken(ctx, tenantID, token)
-	if err != nil {
-		return nil, models.ErrInvalidVerificationCode
-	}
-
-	// Check if already used
-	if reset.IsUsed() {
-		return nil, models.ErrInvalidVerificationCode
-	}
-
-	// Check if expired
-	if reset.IsExpired() {
-		return nil, models.ErrVerificationExpired
-	}
-
-	// Get user
-	user, err := s.userRepo.GetByID(ctx, tenantID, reset.UserID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get user: %w", err)
-	}
-
-	// Hash new password
-	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
-	if err != nil {
-		return nil, fmt.Errorf("failed to hash password: %w", err)
-	}
-
-	// Update user password
-	user.PasswordHash = string(hashedPassword)
-	user.UpdatedAt = time.Now()
-
-	if err := s.userRepo.Update(ctx, user); err != nil {
-		return nil, fmt.Errorf("failed to update user password: %w", err)
-	}
-
-	// Mark reset as used
-	now := time.Now()
-	reset.UsedAt = &now
-	if err := s.passwordResetRepo.Update(ctx, reset); err != nil {
-		s.logger.WithError(err).Error("failed to update password reset record")
-	}
-
-	// Audit log
-	if s.auditService != nil {
-		s.auditService.LogUserAction(ctx, tenantID, user.ID, models.AuditActionPasswordChanged, "user", &user.ID, true, map[string]interface{}{
-			"email": user.Email,
-		})
-	}
-
-	s.logger.WithFields(logrus.Fields{
-		"tenant_id": tenantID,
-		"user_id":   user.ID,
-		"email":     user.Email,
-	}).Info("password reset successfully")
-
-	return user, nil
-}
-
 // Helper methods
 
-func (s *EmailServiceImpl) processTemplate(template string, variables map[string]string) string {
+// processTemplate replaces {{name}} placeholders, passing each value through
+// escape when it is non-nil
+func processTemplate(template string, variables map[string]string, escape func(string) string) string {
 	result := template
 	for key, value := range variables {
-		placeholder := fmt.Sprintf("{{%s}}", key)
-		result = strings.ReplaceAll(result, placeholder, value)
+		if escape != nil {
+			value = escape(value)
+		}
+		result = strings.ReplaceAll(result, "{{"+key+"}}", value)
 	}
 	return result
+}
+
+// sanitizeHeader removes CR and LF so a value cannot inject mail headers
+func sanitizeHeader(value string) string {
+	return strings.NewReplacer("\r", " ", "\n", " ").Replace(value)
 }
 
 func (s *EmailServiceImpl) processEmail(ctx context.Context, email *models.EmailQueue) error {
@@ -539,7 +308,14 @@ func (s *EmailServiceImpl) processEmail(ctx context.Context, email *models.Email
 			"attempts": email.Attempts,
 		}).Error("SMTP send failed")
 
-		email.Status = "failed"
+		email.LastError = err.Error()
+		if email.Attempts < email.MaxAttempts {
+			// Exponential backoff: 1, 2, 4... minutes
+			email.Status = "pending"
+			email.ScheduledAt = time.Now().Add(time.Minute << (email.Attempts - 1))
+		} else {
+			email.Status = "failed"
+		}
 		if err2 := s.queueRepo.Update(ctx, email); err2 != nil {
 			s.logger.WithError(err2).Error("failed to update email status after send failure")
 		}
@@ -661,9 +437,9 @@ func (s *EmailServiceImpl) sendViaSMTP(email *models.EmailQueue) error {
 func buildMIMEMessage(from, to, subject, bodyHTML, bodyText string) string {
 	boundary := "ShieldGate_" + fmt.Sprintf("%d", time.Now().UnixNano())
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("From: %s\r\n", from))
-	sb.WriteString(fmt.Sprintf("To: %s\r\n", to))
-	sb.WriteString(fmt.Sprintf("Subject: %s\r\n", subject))
+	sb.WriteString(fmt.Sprintf("From: %s\r\n", sanitizeHeader(from)))
+	sb.WriteString(fmt.Sprintf("To: %s\r\n", sanitizeHeader(to)))
+	sb.WriteString(fmt.Sprintf("Subject: %s\r\n", mime.QEncoding.Encode("utf-8", sanitizeHeader(subject))))
 	sb.WriteString("MIME-Version: 1.0\r\n")
 	sb.WriteString(fmt.Sprintf("Content-Type: multipart/alternative; boundary=\"%s\"\r\n", boundary))
 	sb.WriteString("\r\n")
@@ -684,20 +460,4 @@ func buildMIMEMessage(from, to, subject, bodyHTML, bodyText string) string {
 
 	sb.WriteString(fmt.Sprintf("--%s--\r\n", boundary))
 	return sb.String()
-}
-
-func (s *EmailServiceImpl) generateVerificationCode() (string, error) {
-	bytes := make([]byte, 16)
-	if _, err := rand.Read(bytes); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(bytes), nil
-}
-
-func (s *EmailServiceImpl) generateResetToken() (string, error) {
-	bytes := make([]byte, 32)
-	if _, err := rand.Read(bytes); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(bytes), nil
 }
