@@ -10,6 +10,7 @@ import (
 
 	"shieldgate/internal/middleware"
 	"shieldgate/internal/models"
+	"shieldgate/internal/observability"
 	"shieldgate/internal/services"
 
 	"github.com/gin-gonic/gin"
@@ -219,6 +220,7 @@ func (h *OAuthHandler) HandleDeviceVerification(c *gin.Context) {
 	user, err := h.userService.Authenticate(c.Request.Context(), tenantID, c.PostForm("username"), c.PostForm("password"))
 	if err != nil {
 		h.logger.WithError(err).WithField("tenant_id", tenantID).Warn("authentication failed on device verification")
+		h.recordLoginFailure(c, tenantID, mfaPurposeDevice, c.PostForm("username"), err)
 		h.renderDevicePage(c, tenant, userCode, "Invalid email or password", "")
 		return
 	}
@@ -230,6 +232,7 @@ func (h *OAuthHandler) HandleDeviceVerification(c *gin.Context) {
 		return
 	}
 	if required {
+		h.record(c, observability.Event{Name: "login", Result: "mfa_required"})
 		h.startMFA(c, tenantID, user.ID, mfaPurposeDevice, "/oauth/device/mfa", gin.H{
 			"user_code": userCode,
 			"action":    c.PostForm("action"),
@@ -259,9 +262,15 @@ func (h *OAuthHandler) applyDeviceDecision(c *gin.Context, tenant *models.Tenant
 	}
 
 	result := "Device approved — you can return to your device now"
+	event := observability.Event{
+		Action: models.AuditActionDeviceApproved, TenantID: tenantID, UserID: &userID, Success: true,
+		Metadata: map[string]interface{}{"amr": amr}, Name: "device", Result: "approved",
+	}
 	if action == "deny" {
 		result = "Device denied — the sign-in request was rejected"
+		event.Action, event.Result = models.AuditActionDeviceDenied, "denied"
 	}
+	h.record(c, event)
 
 	h.logger.WithFields(logrus.Fields{
 		"tenant_id": tenantID,

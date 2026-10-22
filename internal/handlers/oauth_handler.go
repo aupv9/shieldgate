@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
@@ -10,6 +12,7 @@ import (
 	"shieldgate/config"
 	"shieldgate/internal/middleware"
 	"shieldgate/internal/models"
+	"shieldgate/internal/observability"
 	"shieldgate/internal/services"
 
 	"github.com/gin-gonic/gin"
@@ -27,7 +30,20 @@ type OAuthHandler struct {
 	sessionService services.SessionService
 	// mfaService may be nil, in which case no second factor is asked
 	mfaService services.MFAService
-	logger     *logrus.Logger
+	// events may be nil, in which case nothing is audited or counted
+	events *observability.Recorder
+	logger *logrus.Logger
+}
+
+// WithRecorder makes the handler audit and count authentication events
+func (h *OAuthHandler) WithRecorder(events *observability.Recorder) *OAuthHandler {
+	h.events = events
+	return h
+}
+
+// record audits and counts an authentication event of this request
+func (h *OAuthHandler) record(c *gin.Context, ev observability.Event) {
+	h.events.Record(c.Request.Context(), ev)
 }
 
 // NewOAuthHandler creates a new OAuth handler
@@ -100,6 +116,12 @@ func (h *OAuthHandler) HandleToken(c *gin.Context) {
 	}
 
 	grantType := c.PostForm("grant_type")
+
+	// Every grant branch writes its own response; capture it once here to
+	// count the outcome by OAuth error code
+	result := &tokenResultWriter{ResponseWriter: c.Writer}
+	c.Writer = result
+	defer func() { h.events.Metrics().TokenRequest(grantType, result.outcome()) }()
 
 	switch grantType {
 	case "authorization_code":
@@ -467,4 +489,40 @@ func (h *OAuthHandler) renderError(c *gin.Context, errorCode, errorDescription, 
 		"error":             errorCode,
 		"error_description": errorDescription,
 	})
+}
+
+// maxTokenErrorBody bounds how much of an error response is kept to read
+// its OAuth error code
+const maxTokenErrorBody = 4096
+
+// tokenResultWriter keeps the start of a token endpoint response so its
+// outcome (success or OAuth error code) can be counted
+type tokenResultWriter struct {
+	gin.ResponseWriter
+	body bytes.Buffer
+}
+
+func (w *tokenResultWriter) Write(b []byte) (int, error) {
+	if room := maxTokenErrorBody - w.body.Len(); room > 0 && w.Status() >= http.StatusBadRequest {
+		w.body.Write(b[:min(len(b), room)])
+	}
+	return w.ResponseWriter.Write(b)
+}
+
+func (w *tokenResultWriter) WriteString(s string) (int, error) {
+	return w.Write([]byte(s))
+}
+
+// outcome returns "success" or the error code of an OAuth error response
+func (w *tokenResultWriter) outcome() string {
+	if w.Status() < http.StatusBadRequest {
+		return "success"
+	}
+	var resp struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(w.body.Bytes(), &resp) != nil || resp.Error == "" {
+		return "server_error"
+	}
+	return resp.Error
 }

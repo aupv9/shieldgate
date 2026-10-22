@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"shieldgate/internal/models"
+	"shieldgate/internal/observability"
 	"shieldgate/internal/repo"
 
 	"github.com/google/uuid"
@@ -41,28 +42,17 @@ func (s *AuditServiceImpl) Log(ctx context.Context, entry *models.AuditLog) erro
 		entry.ID = uuid.New()
 	}
 
-	// Extract request context if available
-	if entry.RequestID == "" {
-		if requestID := ctx.Value("request_id"); requestID != nil {
-			if reqID, ok := requestID.(string); ok {
-				entry.RequestID = reqID
-			}
+	// Attribute the entry to the HTTP request when the context carries one
+	// (set by observability.RequestContext)
+	if info, ok := observability.RequestInfoFrom(ctx); ok {
+		if entry.RequestID == "" {
+			entry.RequestID = info.RequestID
 		}
-	}
-
-	if entry.IPAddress == "" {
-		if ipAddress := ctx.Value("ip_address"); ipAddress != nil {
-			if ip, ok := ipAddress.(string); ok {
-				entry.IPAddress = ip
-			}
+		if entry.IPAddress == "" {
+			entry.IPAddress = info.IPAddress
 		}
-	}
-
-	if entry.UserAgent == "" {
-		if userAgent := ctx.Value("user_agent"); userAgent != nil {
-			if ua, ok := userAgent.(string); ok {
-				entry.UserAgent = ua
-			}
+		if entry.UserAgent == "" {
+			entry.UserAgent = info.UserAgent
 		}
 	}
 

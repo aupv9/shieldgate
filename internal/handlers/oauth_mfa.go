@@ -12,6 +12,7 @@ import (
 
 	"shieldgate/internal/middleware"
 	"shieldgate/internal/models"
+	"shieldgate/internal/observability"
 	"shieldgate/internal/services"
 
 	"github.com/gin-gonic/gin"
@@ -135,11 +136,14 @@ func (h *OAuthHandler) completeMFA(c *gin.Context, tenantID uuid.UUID, purpose, 
 	switch {
 	case err == nil:
 		logger.WithField("method", method).Info("second factor verified")
+		h.record(c, observability.Event{Name: "mfa", Result: "success"})
 		return userID, services.AMRForSecondFactor(method), true
 	case errors.Is(err, models.ErrInvalidMFACode):
+		h.recordMFAFailure(c, tenantID, userID, purpose, "invalid_code")
 		h.renderMFAPage(c, action, hidden, pendingToken, "Invalid code — please try again")
 	case errors.Is(err, models.ErrMFALocked):
 		logger.Warn("second factor locked after repeated failures")
+		h.recordMFAFailure(c, tenantID, userID, purpose, "locked")
 		restart("Too many incorrect codes — please try again in 15 minutes")
 	case errors.Is(err, models.ErrMFANotEnabled):
 		// Disabled since the password step: start over
@@ -149,6 +153,14 @@ func (h *OAuthHandler) completeMFA(c *gin.Context, tenantID uuid.UUID, purpose, 
 		restart("Something went wrong — please try again")
 	}
 	return uuid.Nil, nil, false
+}
+
+// recordMFAFailure audits a rejected second factor
+func (h *OAuthHandler) recordMFAFailure(c *gin.Context, tenantID, userID uuid.UUID, flow, result string) {
+	h.record(c, observability.Event{
+		Action: models.AuditActionMFAFailed, TenantID: tenantID, UserID: &userID, ErrorCode: result,
+		Metadata: map[string]interface{}{"flow": flow}, Name: "mfa", Result: result,
+	})
 }
 
 // HandleLoginMFA handles POST /oauth/login/mfa: the second factor of a

@@ -8,6 +8,7 @@ import (
 	"shieldgate/config"
 	"shieldgate/internal/middleware"
 	"shieldgate/internal/models"
+	"shieldgate/internal/observability"
 	"shieldgate/internal/services"
 
 	"github.com/gin-gonic/gin"
@@ -30,7 +31,14 @@ const (
 type AccountHandler struct {
 	cfg         *config.Config
 	userService services.UserService
+	events      *observability.Recorder
 	logger      *logrus.Logger
+}
+
+// WithRecorder makes the handler audit account recovery events
+func (h *AccountHandler) WithRecorder(events *observability.Recorder) *AccountHandler {
+	h.events = events
+	return h
 }
 
 // NewAccountHandler creates a new AccountHandler instance
@@ -64,9 +72,13 @@ func (h *AccountHandler) VerifyEmail(c *gin.Context) {
 		return
 	}
 
-	_, err := h.userService.VerifyEmail(c.Request.Context(), tenantID, c.Query("code"))
+	user, err := h.userService.VerifyEmail(c.Request.Context(), tenantID, c.Query("code"))
 	switch {
 	case err == nil:
+		h.events.Record(c.Request.Context(), observability.Event{
+			Action: models.AuditActionEmailVerified, TenantID: tenantID, UserID: &user.ID, Success: true,
+			Name: "email_verification", Result: "success",
+		})
 		h.message(c, http.StatusOK, "Email verified", "Your email address is confirmed. You can close this window.")
 	case errors.Is(err, models.ErrVerificationExpired):
 		h.message(c, http.StatusBadRequest, "Link expired", "This verification link has expired. Ask for a new one and try again.")
@@ -109,6 +121,11 @@ func (h *AccountHandler) ForgotPassword(c *gin.Context) {
 		h.message(c, http.StatusInternalServerError, "Something went wrong", "We could not send the email. Please try again later.")
 		return
 	}
+	// The account may not exist; the attempt is still audited (by email)
+	h.events.Record(c.Request.Context(), observability.Event{
+		Action: models.AuditActionPasswordResetRequested, TenantID: tenantID, Success: true,
+		Metadata: map[string]interface{}{"email": email}, Name: "password_reset", Result: "requested",
+	})
 	h.message(c, http.StatusOK, "Check your email",
 		"If an account exists for that address, we sent a link to reset the password. The link expires in one hour.")
 }
@@ -149,9 +166,13 @@ func (h *AccountHandler) ResetPassword(c *gin.Context) {
 		return
 	}
 
-	_, err := h.userService.ResetPassword(c.Request.Context(), tenantID, token, password)
+	user, err := h.userService.ResetPassword(c.Request.Context(), tenantID, token, password)
 	switch {
 	case err == nil:
+		h.events.Record(c.Request.Context(), observability.Event{
+			Action: models.AuditActionPasswordReset, TenantID: tenantID, UserID: &user.ID, Success: true,
+			Name: "password_reset", Result: "completed",
+		})
 		h.message(c, http.StatusOK, "Password changed",
 			"Your password has been changed and you have been signed out everywhere. Sign in again with your new password.")
 	case errors.Is(err, services.ErrPasswordTooShort):
