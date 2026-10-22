@@ -239,4 +239,6 @@ func TestProcessQueue_NoSMTPHost_MarksSent(t *testing.T) {
 	email := queue.only(t)
 	assert.Equal(t, "sent", email.Status)
 	assert.NotNil(t, email.SentAt)
+	assert.Empty(t, email.BodyText, "sent bodies may hold live links and are discarded")
+	assert.Empty(t, email.BodyHTML)
 }
