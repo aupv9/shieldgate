@@ -35,8 +35,14 @@ const (
 )
 
 // redactedResponseFields are removed from a response before it is stored:
-// they are shown exactly once, and storing them would undo their hashing
-var redactedResponseFields = map[string]bool{"client_secret": true}
+// they are shown exactly once, and storing them would undo their hashing or
+// encryption (client secrets, TOTP secrets, MFA recovery codes)
+var redactedResponseFields = map[string]bool{
+	"client_secret":  true,
+	"secret":         true,
+	"otpauth_uri":    true,
+	"recovery_codes": true,
+}
 
 // IdempotencyStore persists Idempotency-Key records.
 // repo.IdempotencyRepository satisfies it.

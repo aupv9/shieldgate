@@ -67,7 +67,7 @@ func newOIDCHandlerFixture(t *testing.T) *oidcHandlerFixture {
 	f.clients.On("ValidateRedirectURI", mock.Anything, f.client, oidcTestRedirectURI).Return(nil)
 	f.clients.On("ValidateRedirectURI", mock.Anything, f.client, mock.Anything).Return(errors.New("redirect_uri not registered"))
 
-	handler := handlers.NewOAuthHandler(utils.CreateTestConfig(), f.tenants, f.users, f.clients, f.auth, preConsented(), logger)
+	handler := handlers.NewOAuthHandler(utils.CreateTestConfig(), f.tenants, f.users, f.clients, f.auth, preConsented(), nil, logger)
 	f.router = gin.New()
 	f.router.SetFuncMap(template.FuncMap{
 		"contains": func(s, substr string) bool { return strings.Contains(s, substr) },
@@ -167,7 +167,7 @@ func TestLogin_NonceFromAuthorizeRequest_ReachesAuthorizationCodeAndRedirectHasI
 	user := &models.User{ID: uuid.New(), TenantID: f.tenantID, Email: "a@example.com"}
 	f.users.On("Authenticate", mock.Anything, f.tenantID, "a@example.com", "pw-123456").Return(user, nil)
 	f.auth.On("GenerateAuthorizationCode", mock.Anything, f.tenantID, f.client.ID, user.ID, oidcTestRedirectURI,
-		"openid profile", "", "", "n-0S6_WzA2Mj", mock.AnythingOfType("time.Time")).
+		"openid profile", "", "", "n-0S6_WzA2Mj", mock.AnythingOfType("time.Time"), mock.Anything).
 		Return(&models.AuthorizationCode{Code: "the-code"}, nil)
 
 	page := f.get(authorizeURL(map[string]string{

@@ -439,6 +439,36 @@ func Migrate(db *gorm.DB) error {
 		)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_idempotency_keys_scope ON idempotency_keys(tenant_id, principal, idem_key)`,
 		`CREATE INDEX IF NOT EXISTS idx_idempotency_keys_expires_at ON idempotency_keys(expires_at)`,
+
+		// MFA: TOTP authenticators (secret sealed with AES-GCM) and
+		// recovery codes (keyed hash only)
+		`CREATE TABLE IF NOT EXISTS user_mfa (
+			user_id UUID PRIMARY KEY,
+			tenant_id UUID NOT NULL,
+			totp_secret TEXT NOT NULL,
+			confirmed_at TIMESTAMP WITH TIME ZONE,
+			last_used_step BIGINT NOT NULL DEFAULT 0,
+			failed_attempts INTEGER NOT NULL DEFAULT 0,
+			locked_until TIMESTAMP WITH TIME ZONE,
+			created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_mfa_tenant ON user_mfa(tenant_id)`,
+		`CREATE TABLE IF NOT EXISTS mfa_recovery_codes (
+			id UUID PRIMARY KEY,
+			tenant_id UUID NOT NULL,
+			user_id UUID NOT NULL,
+			code_hash VARCHAR(64) NOT NULL,
+			used_at TIMESTAMP WITH TIME ZONE,
+			created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mfa_recovery_codes_user_hash ON mfa_recovery_codes(tenant_id, user_id, code_hash)`,
+
+		// amr (RFC 8176) travels with auth_time from login to the ID token
+		`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS amr JSONB NOT NULL DEFAULT '[]'`,
+		`ALTER TABLE authorization_codes ADD COLUMN IF NOT EXISTS amr JSONB`,
+		`ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS amr JSONB`,
+		`ALTER TABLE device_codes ADD COLUMN IF NOT EXISTS amr JSONB`,
 	}
 
 	// Execute each migration

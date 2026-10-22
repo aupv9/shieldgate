@@ -44,7 +44,7 @@ func hashToken(token string) string {
 	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
-func (s *authServiceImpl) GenerateAuthorizationCode(ctx context.Context, tenantID, clientID, userID uuid.UUID, redirectURI, scope, codeChallenge, codeChallengeMethod, nonce string, authTime time.Time) (*models.AuthorizationCode, error) {
+func (s *authServiceImpl) GenerateAuthorizationCode(ctx context.Context, tenantID, clientID, userID uuid.UUID, redirectURI, scope, codeChallenge, codeChallengeMethod, nonce string, authTime time.Time, amr []string) (*models.AuthorizationCode, error) {
 	// Generate random code
 	code, err := s.generateRandomString(32)
 	if err != nil {
@@ -64,6 +64,7 @@ func (s *authServiceImpl) GenerateAuthorizationCode(ctx context.Context, tenantI
 		CodeChallengeMethod: codeChallengeMethod,
 		Nonce:               nonce,
 		AuthTime:            &authTime,
+		AMR:                 amr,
 		ExpiresAt:           time.Now().Add(s.config.AuthorizationCodeDuration),
 	}
 
@@ -126,7 +127,7 @@ func (s *authServiceImpl) ExchangeAuthorizationCode(ctx context.Context, tenantI
 
 	// Generate tokens; the family is keyed by the authorization code so a
 	// later code replay can revoke everything issued from it
-	auth := authContext{authTime: authCode.AuthTime, nonce: authCode.Nonce}
+	auth := authContext{authTime: authCode.AuthTime, amr: authCode.AMR, nonce: authCode.Nonce}
 	tokenResponse, err := s.issueTokens(ctx, tenantID, authCode.ClientID, authCode.UserID, authCode.Scope, authCode.ID, true, true, auth)
 	if err != nil {
 		return nil, err
@@ -222,6 +223,7 @@ func (s *authServiceImpl) issueTokens(ctx context.Context, tenantID, clientID, u
 			FamilyID:  familyID,
 			Scope:     scope,
 			AuthTime:  auth.authTime,
+			AMR:       auth.amr,
 			ExpiresAt: time.Now().Add(s.config.RefreshTokenDuration),
 		}
 		if err := s.repos.RefreshToken.Create(ctx, refreshToken); err != nil {
@@ -248,6 +250,7 @@ func (s *authServiceImpl) issueTokens(ctx context.Context, tenantID, clientID, u
 			Scope:       scope,
 			Nonce:       auth.nonce,
 			AuthTime:    auth.authTime,
+			AMR:         auth.amr,
 			AccessToken: accessToken,
 		})
 		if err != nil {
@@ -302,7 +305,7 @@ func (s *authServiceImpl) RefreshTokens(ctx context.Context, tenantID uuid.UUID,
 
 	// Issue new tokens in the same family, then mark the old token rotated
 	// No nonce on refresh; auth_time stays the original authentication time
-	tokenResponse, err := s.issueTokens(ctx, tenantID, token.ClientID, token.UserID, scope, token.FamilyID, true, true, authContext{authTime: token.AuthTime})
+	tokenResponse, err := s.issueTokens(ctx, tenantID, token.ClientID, token.UserID, scope, token.FamilyID, true, true, authContext{authTime: token.AuthTime, amr: token.AMR})
 	if err != nil {
 		return nil, err
 	}
@@ -434,6 +437,9 @@ func (s *authServiceImpl) GenerateIDToken(ctx context.Context, user *models.User
 	if params.AuthTime != nil && !params.AuthTime.IsZero() {
 		claims.AuthTime = params.AuthTime.Unix()
 	}
+	if len(params.AMR) > 0 {
+		claims.AMR = params.AMR
+	}
 	if params.AccessToken != "" {
 		claims.AtHash = s.keys.TokenHash(params.AccessToken)
 	}
@@ -500,7 +506,7 @@ func (s *authServiceImpl) GetDiscoveryDocument(ctx context.Context) (*models.Ope
 		CodeChallengeMethodsSupported:             []string{"S256"},
 		PromptValuesSupported:                     []string{"none", "login", "consent", "select_account"},
 		ClaimsSupported: []string{
-			"sub", "iss", "aud", "exp", "iat", "auth_time", "nonce", "at_hash", "tenant_id",
+			"sub", "iss", "aud", "exp", "iat", "auth_time", "amr", "nonce", "at_hash", "tenant_id",
 			"name", "given_name", "family_name", "preferred_username", "picture", "locale", "zoneinfo", "updated_at",
 			"email", "email_verified",
 			"phone_number", "phone_number_verified",

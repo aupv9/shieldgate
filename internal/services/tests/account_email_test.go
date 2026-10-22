@@ -231,7 +231,7 @@ func newAccountFixture(t *testing.T) *accountFixture {
 		PasswordHash: string(hash), Status: models.UserStatusPending,
 	}
 	require.NoError(t, f.repos.User.Create(f.ctx, f.user))
-	_, _, err = sessionService.CreateSession(f.ctx, f.user.TenantID, f.user.ID, "", "")
+	_, _, err = sessionService.CreateSession(f.ctx, f.user.TenantID, f.user.ID, nil, "", "")
 	require.NoError(t, err)
 	return f
 }

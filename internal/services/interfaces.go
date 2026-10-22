@@ -69,7 +69,7 @@ type AuthService interface {
 	// Authorization Code Flow
 	// GenerateAuthorizationCode stores nonce and authTime so the ID token
 	// issued on exchange can echo them (OIDC Core §3.1.3.6)
-	GenerateAuthorizationCode(ctx context.Context, tenantID, clientID, userID uuid.UUID, redirectURI, scope, codeChallenge, codeChallengeMethod, nonce string, authTime time.Time) (*models.AuthorizationCode, error)
+	GenerateAuthorizationCode(ctx context.Context, tenantID, clientID, userID uuid.UUID, redirectURI, scope, codeChallenge, codeChallengeMethod, nonce string, authTime time.Time, amr []string) (*models.AuthorizationCode, error)
 	// clientID is the client's internal ID (models.Client.ID), not its public client_id
 	ExchangeAuthorizationCode(ctx context.Context, tenantID uuid.UUID, code, clientID, clientSecret, redirectURI, codeVerifier string) (*models.TokenResponse, error)
 
@@ -92,7 +92,7 @@ type AuthService interface {
 	// the device_code / user_code pair
 	CreateDeviceAuthorization(ctx context.Context, tenantID uuid.UUID, client *models.Client, scope string) (*models.DeviceAuthorizationResponse, error)
 	// ApproveDeviceCode links the user-typed code to an authenticated user
-	ApproveDeviceCode(ctx context.Context, tenantID uuid.UUID, userCode string, userID uuid.UUID) error
+	ApproveDeviceCode(ctx context.Context, tenantID uuid.UUID, userCode string, userID uuid.UUID, amr []string) error
 	// DenyDeviceCode marks the user-typed code as denied by the user
 	DenyDeviceCode(ctx context.Context, tenantID uuid.UUID, userCode string) error
 	// ExchangeDeviceCode is called by the polling device; returns
@@ -136,11 +136,31 @@ type Services struct {
 	Email      EmailService
 }
 
+// MFAService manages TOTP second factors and recovery codes
+type MFAService interface {
+	Status(ctx context.Context, tenantID, userID uuid.UUID) (*models.MFAStatus, error)
+	// IsEnabled reports whether the user must pass a second factor
+	IsEnabled(ctx context.Context, tenantID, userID uuid.UUID) (bool, error)
+	// BeginTOTPEnrollment creates a pending authenticator and returns its
+	// secret, shown once; it fails if one is already enabled
+	BeginTOTPEnrollment(ctx context.Context, tenantID, userID uuid.UUID) (*models.TOTPEnrollment, error)
+	// ConfirmTOTPEnrollment enables the pending authenticator once the user
+	// proves it works, ends the user's sessions and returns recovery codes
+	ConfirmTOTPEnrollment(ctx context.Context, tenantID, userID uuid.UUID, code string) ([]string, error)
+	// Verify checks a TOTP or recovery code and returns the method used
+	// (models.MFAMethodTOTP or models.MFAMethodRecoveryCode)
+	Verify(ctx context.Context, tenantID, userID uuid.UUID, code string) (string, error)
+	// RegenerateRecoveryCodes replaces all recovery codes
+	RegenerateRecoveryCodes(ctx context.Context, tenantID, userID uuid.UUID) ([]string, error)
+	// Disable removes the second factor and ends the user's sessions
+	Disable(ctx context.Context, tenantID, userID uuid.UUID) error
+}
+
 // SessionService manages single sign-on sessions and remembered consent
 type SessionService interface {
 	// CreateSession starts a session for a user who just authenticated and
 	// returns the token to place in the browser cookie
-	CreateSession(ctx context.Context, tenantID, userID uuid.UUID, ipAddress, userAgent string) (string, *models.Session, error)
+	CreateSession(ctx context.Context, tenantID, userID uuid.UUID, amr []string, ipAddress, userAgent string) (string, *models.Session, error)
 	// GetSession returns the live session for a cookie token, or
 	// models.ErrSessionNotFound if it is unknown or expired
 	GetSession(ctx context.Context, tenantID uuid.UUID, token string) (*models.Session, error)

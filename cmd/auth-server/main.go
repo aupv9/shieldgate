@@ -21,6 +21,7 @@ import (
 	"shieldgate/internal/database"
 	"shieldgate/internal/handlers"
 	"shieldgate/internal/jwtkeys"
+	"shieldgate/internal/mfa"
 	"shieldgate/internal/middleware"
 	gormrepo "shieldgate/internal/repo/gorm"
 	"shieldgate/internal/services"
@@ -102,6 +103,21 @@ func main() {
 	clientService := services.NewClientService(repos, logger)
 	authService := services.NewAuthService(repos, cfg, jwtKeys, logger)
 	sessionService := services.NewSessionService(repos.Session, repos.Consent, cfg.SessionDuration, logger)
+
+	// MFA secrets are encrypted at rest with a dedicated key when configured
+	mfaMasterKey := mfa.DeriveKey(cfg.JWTSecret)
+	if cfg.MFAEncryptionKey != "" {
+		if mfaMasterKey, err = mfa.ParseKey(cfg.MFAEncryptionKey); err != nil {
+			logger.Fatalf("Invalid MFA_ENCRYPTION_KEY: %v", err)
+		}
+	} else {
+		logger.Warn("No MFA_ENCRYPTION_KEY set: deriving it from JWT_SECRET; rotating JWT_SECRET will invalidate enrolled authenticators")
+	}
+	mfaKeys, err := mfa.NewKeys(mfaMasterKey)
+	if err != nil {
+		logger.Fatalf("Failed to initialize MFA keys: %v", err)
+	}
+	mfaService := services.NewMFAService(repos, mfaKeys, logger)
 	roleService := services.NewRoleService(repos.Role, repos.Permission, repos.UserRole, repos.RolePermission, auditService, logger)
 	permissionService := services.NewPermissionService(repos.Permission, repos.Role, repos.UserRole, repos.RolePermission, logger)
 
@@ -179,12 +195,13 @@ func main() {
 	userHandler := handlers.NewUserHandler(userService, logger)
 	accountHandler := handlers.NewAccountHandler(cfg, userService, logger)
 	clientHandler := handlers.NewClientHandler(clientService, logger)
-	oauthHandler := handlers.NewOAuthHandler(cfg, tenantService, userService, clientService, authService, sessionService, logger)
+	oauthHandler := handlers.NewOAuthHandler(cfg, tenantService, userService, clientService, authService, sessionService, mfaService, logger)
+	mfaHandler := handlers.NewMFAHandler(mfaService, logger)
 	rbacHandler := handlers.NewRBACHandler(roleService, permissionService, auditService, logger)
 	auditHandler := handlers.NewAuditHandler(auditService, logger)
 
 	// Setup routes
-	setupRoutes(cfg, db, redisClient, router, repos.Idempotency, tenantHandler, userHandler, accountHandler, clientHandler, oauthHandler, rbacHandler, auditHandler, authService, authz, jwtKeys)
+	setupRoutes(cfg, db, redisClient, router, repos.Idempotency, tenantHandler, userHandler, accountHandler, mfaHandler, clientHandler, oauthHandler, rbacHandler, auditHandler, authService, authz, jwtKeys)
 
 	// Create HTTP server
 	server := &http.Server{
@@ -257,6 +274,7 @@ func setupRoutes(
 	tenantHandler *handlers.TenantHandler,
 	userHandler *handlers.UserHandler,
 	accountHandler *handlers.AccountHandler,
+	mfaHandler *handlers.MFAHandler,
 	clientHandler *handlers.ClientHandler,
 	oauthHandler *handlers.OAuthHandler,
 	rbacHandler *handlers.RBACHandler,
@@ -325,6 +343,9 @@ func setupRoutes(
 
 		// User management
 		userHandler.RegisterRoutes(api.Group("/users"), authz)
+
+		// Second factors: /v1/users/:user_id/mfa/...
+		mfaHandler.RegisterRoutes(api.Group("/users"), authz)
 
 		// Client management
 		clientHandler.RegisterRoutes(api.Group("/clients"), authz)
