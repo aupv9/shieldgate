@@ -127,6 +127,18 @@ const (
 	AuditActionRoleRevoked       AuditAction = "role.revoked"
 	AuditActionPermissionGranted AuditAction = "permission.granted"
 	AuditActionPermissionRevoked AuditAction = "permission.revoked"
+
+	AuditActionTokenReuseDetected     AuditAction = "token.reuse_detected"
+	AuditActionMFAEnabled             AuditAction = "user.mfa.enabled"
+	AuditActionMFADisabled            AuditAction = "user.mfa.disabled"
+	AuditActionMFAReset               AuditAction = "user.mfa.reset"
+	AuditActionMFAFailed              AuditAction = "user.mfa.failed"
+	AuditActionConsentGranted         AuditAction = "user.consent.granted"
+	AuditActionConsentDenied          AuditAction = "user.consent.denied"
+	AuditActionDeviceApproved         AuditAction = "device.approved"
+	AuditActionDeviceDenied           AuditAction = "device.denied"
+	AuditActionPasswordResetRequested AuditAction = "user.password.reset_requested"
+	AuditActionPasswordReset          AuditAction = "user.password.reset"
 )
 
 // Email template types (identifier strings stored/referenced by templates)
@@ -390,10 +402,13 @@ const (
 	TokenTypeAccessToken = "urn:ietf:params:oauth:token-type:access_token"
 )
 
-// Grant type URN identifiers
+// Grant type identifiers (RFC 6749 §4, RFC 8628, RFC 8693)
 const (
-	GrantTypeDeviceCode    = "urn:ietf:params:oauth:grant-type:device_code"
-	GrantTypeTokenExchange = "urn:ietf:params:oauth:grant-type:token-exchange"
+	GrantTypeAuthorizationCode = "authorization_code"
+	GrantTypeRefreshToken      = "refresh_token"
+	GrantTypeClientCredentials = "client_credentials"
+	GrantTypeDeviceCode        = "urn:ietf:params:oauth:grant-type:device_code"
+	GrantTypeTokenExchange     = "urn:ietf:params:oauth:grant-type:token-exchange"
 )
 
 // TokenExchangeResponse is the response of a token exchange (RFC 8693 §2.2.1)
@@ -1060,6 +1075,38 @@ type MFARecoveryCodes struct {
 // MFACodeRequest carries a TOTP or recovery code
 type MFACodeRequest struct {
 	Code string `json:"code" binding:"required"`
+}
+
+// Token events reported by the auth service
+const (
+	TokenEventIssued        = "issued"
+	TokenEventRevoked       = "revoked"
+	TokenEventReuseDetected = "reuse_detected"
+)
+
+// Single-use credentials whose replay is detected
+const (
+	CredentialAuthorizationCode = "authorization_code"
+	CredentialRefreshToken      = "refresh_token"
+)
+
+// TokenEvent describes a change to issued tokens, for metrics and the
+// audit log. It never carries token values.
+type TokenEvent struct {
+	Type     string
+	TenantID uuid.UUID
+	ClientID uuid.UUID
+	// UserID is nil for tokens issued to a client itself
+	UserID *uuid.UUID
+	// GrantType is set for issued tokens
+	GrantType string
+	Scope     string
+	// FamilyID groups the tokens of one grant; uuid.Nil when not applicable
+	FamilyID uuid.UUID
+	// Credential is the replayed credential for TokenEventReuseDetected
+	Credential string
+	// Actor is the client acting for the subject in a token exchange
+	Actor string
 }
 
 // IdempotencyKey records a management API POST made with an

@@ -6,6 +6,7 @@ import (
 
 	"shieldgate/internal/middleware"
 	"shieldgate/internal/models"
+	"shieldgate/internal/observability"
 
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
@@ -98,6 +99,10 @@ func (h *OAuthHandler) HandleLogout(c *gin.Context) {
 			"user_id":    session.UserID,
 			"session_id": session.ID,
 		}).Info("session ended by logout")
+		h.record(c, observability.Event{
+			Action: models.AuditActionUserLogout, TenantID: tenantID, UserID: &session.UserID,
+			Success: true, Name: "logout", Result: "success",
+		})
 	}
 	h.endBrowserSession(c, tenantID)
 

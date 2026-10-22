@@ -136,6 +136,13 @@ type Services struct {
 	Email      EmailService
 }
 
+// TokenEventSink receives token events (issuance, revocation, replay
+// detection) for metrics and the audit log; observability.Recorder
+// implements it. Implementations must not fail the token operation.
+type TokenEventSink interface {
+	TokenEvent(ctx context.Context, ev models.TokenEvent)
+}
+
 // MFAService manages TOTP second factors and recovery codes
 type MFAService interface {
 	Status(ctx context.Context, tenantID, userID uuid.UUID) (*models.MFAStatus, error)
