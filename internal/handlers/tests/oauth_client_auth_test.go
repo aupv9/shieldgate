@@ -50,6 +50,7 @@ func newHandlerFixture() *handlerFixture {
 		f.userService,
 		f.clientService,
 		f.authService,
+		preConsented(),
 		logger,
 	)
 
@@ -221,7 +222,7 @@ func TestHandleToken_RefreshGrant_UsesBasicAuthAndScope(t *testing.T) {
 	f := newHandlerFixture()
 	client := confidentialClient(f.tenantID, []string{"refresh_token"}, []string{"read"})
 	f.clientService.On("ValidateClient", mock.Anything, f.tenantID, "conf-client", "s3cret").Return(client, nil)
-	f.authService.On("RefreshTokens", mock.Anything, f.tenantID, "rt-1", "conf-client", "read").
+	f.authService.On("RefreshTokens", mock.Anything, f.tenantID, "rt-1", client.ID.String(), "read").
 		Return(&models.TokenResponse{AccessToken: "at2", TokenType: "Bearer", ExpiresIn: 3600, RefreshToken: "rt-2", Scope: "read"}, nil)
 
 	form := url.Values{}

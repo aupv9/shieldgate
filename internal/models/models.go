@@ -27,8 +27,11 @@ var (
 	ErrInvalidClient           = errors.New("invalid client")
 	ErrInvalidGrant            = errors.New("invalid grant")
 	ErrInvalidScope            = errors.New("invalid scope")
+	ErrInsufficientScope       = errors.New("insufficient scope")
+	ErrSessionNotFound         = errors.New("session not found")
 	ErrExpiredToken            = errors.New("token expired")
 	ErrRevokedToken            = errors.New("token revoked")
+	ErrInvalidToken            = errors.New("invalid token")
 	ErrInsufficientPermissions = errors.New("insufficient permissions")
 	ErrTenantMismatch          = errors.New("tenant mismatch")
 	// RBAC errors
@@ -142,6 +145,16 @@ func (a StringArray) Value() (driver.Value, error) {
 	return json.Marshal(a)
 }
 
+// Contains reports whether value is an element, compared exactly
+func (a StringArray) Contains(value string) bool {
+	for _, v := range a {
+		if v == value {
+			return true
+		}
+	}
+	return false
+}
+
 // Scan implements the sql.Scanner interface
 func (a *StringArray) Scan(value interface{}) error {
 	if value == nil {
@@ -209,19 +222,22 @@ type User struct {
 // carries the generated secret exactly once — in the response of the create
 // (or confidential-rotation) call — and is never persisted.
 type Client struct {
-	ID                uuid.UUID      `json:"id" gorm:"type:uuid;primary_key;default:gen_random_uuid()"`
-	TenantID          uuid.UUID      `json:"tenant_id" gorm:"type:uuid;not null;index:idx_clients_tenant_id"`
-	ClientID          string         `json:"client_id" gorm:"not null;size:255;index:idx_clients_tenant_client_id,unique"`
-	ClientSecret      string         `json:"-" gorm:"size:255"`
-	PlainClientSecret string         `json:"client_secret,omitempty" gorm:"-"`
-	Name              string         `json:"name" gorm:"not null;size:255"`
-	RedirectURIs      StringArray    `json:"redirect_uris" gorm:"type:jsonb;not null;default:'[]'"`
-	GrantTypes        StringArray    `json:"grant_types" gorm:"type:jsonb;not null;default:'[]'"`
-	Scopes            StringArray    `json:"scopes" gorm:"type:jsonb;not null;default:'[]'"`
-	IsPublic          bool           `json:"is_public" gorm:"not null;default:false"`
-	CreatedAt         time.Time      `json:"created_at" gorm:"autoCreateTime"`
-	UpdatedAt         time.Time      `json:"updated_at" gorm:"autoUpdateTime"`
-	DeletedAt         gorm.DeletedAt `json:"-" gorm:"index"`
+	ID                uuid.UUID   `json:"id" gorm:"type:uuid;primary_key;default:gen_random_uuid()"`
+	TenantID          uuid.UUID   `json:"tenant_id" gorm:"type:uuid;not null;index:idx_clients_tenant_id"`
+	ClientID          string      `json:"client_id" gorm:"not null;size:255;index:idx_clients_tenant_client_id,unique"`
+	ClientSecret      string      `json:"-" gorm:"size:255"`
+	PlainClientSecret string      `json:"client_secret,omitempty" gorm:"-"`
+	Name              string      `json:"name" gorm:"not null;size:255"`
+	RedirectURIs      StringArray `json:"redirect_uris" gorm:"type:jsonb;not null;default:'[]'"`
+	// PostLogoutRedirectURIs are the only URIs RP-initiated logout may
+	// redirect to (OIDC RP-Initiated Logout §3)
+	PostLogoutRedirectURIs StringArray    `json:"post_logout_redirect_uris" gorm:"type:jsonb;not null;default:'[]'"`
+	GrantTypes             StringArray    `json:"grant_types" gorm:"type:jsonb;not null;default:'[]'"`
+	Scopes                 StringArray    `json:"scopes" gorm:"type:jsonb;not null;default:'[]'"`
+	IsPublic               bool           `json:"is_public" gorm:"not null;default:false"`
+	CreatedAt              time.Time      `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt              time.Time      `json:"updated_at" gorm:"autoUpdateTime"`
+	DeletedAt              gorm.DeletedAt `json:"-" gorm:"index"`
 }
 
 // AuthorizationCode represents an OAuth 2.0 authorization code
@@ -235,9 +251,43 @@ type AuthorizationCode struct {
 	Scope               string     `json:"scope" gorm:"type:text"`
 	CodeChallenge       string     `json:"code_challenge" gorm:"size:255"`
 	CodeChallengeMethod string     `json:"code_challenge_method" gorm:"size:50"`
+	Nonce               string     `json:"-" gorm:"type:text"`
+	AuthTime            *time.Time `json:"auth_time"`
 	UsedAt              *time.Time `json:"used_at"`
 	ExpiresAt           time.Time  `json:"expires_at" gorm:"not null;index"`
 	CreatedAt           time.Time  `json:"created_at" gorm:"autoCreateTime"`
+}
+
+// Session is a user's single sign-on session at the authorization server.
+// The browser holds a random token in a cookie; only its hash is stored.
+type Session struct {
+	ID        uuid.UUID `json:"id" gorm:"type:uuid;primary_key;default:gen_random_uuid()"`
+	TenantID  uuid.UUID `json:"tenant_id" gorm:"type:uuid;not null;index"`
+	UserID    uuid.UUID `json:"user_id" gorm:"type:uuid;not null;index"`
+	TokenHash string    `json:"-" gorm:"not null;size:255;uniqueIndex"`
+	// AuthTime is when the user last authenticated with credentials
+	AuthTime  time.Time `json:"auth_time" gorm:"not null"`
+	IPAddress string    `json:"ip_address" gorm:"size:45"`
+	UserAgent string    `json:"user_agent" gorm:"type:text"`
+	ExpiresAt time.Time `json:"expires_at" gorm:"not null;index"`
+	CreatedAt time.Time `json:"created_at" gorm:"autoCreateTime"`
+}
+
+// IsExpired reports whether the session has passed its absolute lifetime
+func (s *Session) IsExpired() bool {
+	return !time.Now().Before(s.ExpiresAt)
+}
+
+// Consent records the scopes a user has granted a client, so the consent
+// screen is shown only for scopes not granted before
+type Consent struct {
+	ID        uuid.UUID `json:"id" gorm:"type:uuid;primary_key;default:gen_random_uuid()"`
+	TenantID  uuid.UUID `json:"tenant_id" gorm:"type:uuid;not null;index"`
+	UserID    uuid.UUID `json:"user_id" gorm:"type:uuid;not null"`
+	ClientID  uuid.UUID `json:"client_id" gorm:"type:uuid;not null"`
+	Scope     string    `json:"scope" gorm:"type:text;not null;default:''"`
+	CreatedAt time.Time `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt time.Time `json:"updated_at" gorm:"autoUpdateTime"`
 }
 
 // AccessToken represents an OAuth 2.0 access token.
@@ -267,6 +317,7 @@ type RefreshToken struct {
 	UserID    uuid.UUID  `json:"user_id" gorm:"type:uuid;not null;index"`
 	FamilyID  uuid.UUID  `json:"family_id" gorm:"type:uuid;index"`
 	Scope     string     `json:"scope" gorm:"type:text"`
+	AuthTime  *time.Time `json:"auth_time"`
 	RevokedAt *time.Time `json:"revoked_at"`
 	ExpiresAt time.Time  `json:"expires_at" gorm:"not null;index"`
 	CreatedAt time.Time  `json:"created_at" gorm:"autoCreateTime"`
@@ -300,6 +351,7 @@ type DeviceCode struct {
 	Status       DeviceCodeStatus `json:"status" gorm:"not null;size:20;default:'pending';index"`
 	Interval     int              `json:"interval" gorm:"not null;default:5"`
 	LastPolledAt *time.Time       `json:"last_polled_at"`
+	AuthTime     *time.Time       `json:"auth_time"`
 	ExpiresAt    time.Time        `json:"expires_at" gorm:"not null;index"`
 	CreatedAt    time.Time        `json:"created_at" gorm:"autoCreateTime"`
 }
@@ -366,27 +418,115 @@ type IntrospectionResponse struct {
 }
 
 // UserInfo represents OpenID Connect UserInfo response
+// UserInfo holds standard OIDC claims (OIDC Core §5.1). Only the claims of
+// granted scopes are populated; the rest are omitted from JSON.
 type UserInfo struct {
-	Sub           string `json:"sub"`
-	Name          string `json:"name,omitempty"`
+	Sub string `json:"sub"`
+
+	// profile scope
+	Name              string `json:"name,omitempty"`
+	GivenName         string `json:"given_name,omitempty"`
+	FamilyName        string `json:"family_name,omitempty"`
+	PreferredUsername string `json:"preferred_username,omitempty"`
+	Picture           string `json:"picture,omitempty"`
+	Locale            string `json:"locale,omitempty"`
+	Zoneinfo          string `json:"zoneinfo,omitempty"`
+	UpdatedAt         int64  `json:"updated_at,omitempty"`
+
+	// email scope; pointer so an unverified address is reported as false
 	Email         string `json:"email,omitempty"`
-	EmailVerified bool   `json:"email_verified,omitempty"`
+	EmailVerified *bool  `json:"email_verified,omitempty"`
+
+	// phone scope
+	PhoneNumber         string `json:"phone_number,omitempty"`
+	PhoneNumberVerified *bool  `json:"phone_number_verified,omitempty"`
+}
+
+// IDTokenParams describes the authentication an ID token attests to
+type IDTokenParams struct {
+	// ClientID is the client's public client_id, used as the audience
+	ClientID string
+	// Scope selects which user claims are included
+	Scope string
+	// Nonce from the authorization request; empty on refresh (OIDC Core §12.2)
+	Nonce string
+	// AuthTime is when the user authenticated; nil omits auth_time
+	AuthTime *time.Time
+	// AccessToken issued alongside, for at_hash; empty omits at_hash
+	AccessToken string
+}
+
+// IDTokenClaims are the claims of an OpenID Connect ID token (OIDC Core §2).
+// The embedded UserInfo carries sub plus any scope-granted user claims.
+type IDTokenClaims struct {
+	UserInfo
+	Iss      string `json:"iss"`
+	Aud      string `json:"aud"`
+	Exp      int64  `json:"exp"`
+	Iat      int64  `json:"iat"`
+	AuthTime int64  `json:"auth_time,omitempty"`
+	Nonce    string `json:"nonce,omitempty"`
+	AtHash   string `json:"at_hash,omitempty"`
+	TenantID string `json:"tenant_id"`
+}
+
+// GetExpirationTime implements jwt.Claims interface
+func (c *IDTokenClaims) GetExpirationTime() (*jwt.NumericDate, error) {
+	return jwt.NewNumericDate(time.Unix(c.Exp, 0)), nil
+}
+
+// GetIssuedAt implements jwt.Claims interface
+func (c *IDTokenClaims) GetIssuedAt() (*jwt.NumericDate, error) {
+	return jwt.NewNumericDate(time.Unix(c.Iat, 0)), nil
+}
+
+// GetNotBefore implements jwt.Claims interface
+func (c *IDTokenClaims) GetNotBefore() (*jwt.NumericDate, error) {
+	return nil, nil
+}
+
+// GetIssuer implements jwt.Claims interface
+func (c *IDTokenClaims) GetIssuer() (string, error) {
+	return c.Iss, nil
+}
+
+// GetSubject implements jwt.Claims interface
+func (c *IDTokenClaims) GetSubject() (string, error) {
+	return c.Sub, nil
+}
+
+// GetAudience implements jwt.Claims interface
+func (c *IDTokenClaims) GetAudience() (jwt.ClaimStrings, error) {
+	return jwt.ClaimStrings{c.Aud}, nil
 }
 
 // OpenIDConfiguration represents OpenID Provider configuration
 type OpenIDConfiguration struct {
-	Issuer                           string   `json:"issuer"`
-	AuthorizationEndpoint            string   `json:"authorization_endpoint"`
-	TokenEndpoint                    string   `json:"token_endpoint"`
-	UserInfoEndpoint                 string   `json:"userinfo_endpoint"`
-	JwksURI                          string   `json:"jwks_uri"`
-	DeviceAuthorizationEndpoint      string   `json:"device_authorization_endpoint,omitempty"`
-	ResponseTypesSupported           []string `json:"response_types_supported"`
-	GrantTypesSupported              []string `json:"grant_types_supported,omitempty"`
-	SubjectTypesSupported            []string `json:"subject_types_supported"`
-	IDTokenSigningAlgValuesSupported []string `json:"id_token_signing_alg_values_supported"`
-	ScopesSupported                  []string `json:"scopes_supported"`
-	ClaimsSupported                  []string `json:"claims_supported"`
+	Issuer                                     string   `json:"issuer"`
+	AuthorizationEndpoint                      string   `json:"authorization_endpoint"`
+	TokenEndpoint                              string   `json:"token_endpoint"`
+	UserInfoEndpoint                           string   `json:"userinfo_endpoint"`
+	JwksURI                                    string   `json:"jwks_uri"`
+	RevocationEndpoint                         string   `json:"revocation_endpoint,omitempty"`
+	IntrospectionEndpoint                      string   `json:"introspection_endpoint,omitempty"`
+	DeviceAuthorizationEndpoint                string   `json:"device_authorization_endpoint,omitempty"`
+	EndSessionEndpoint                         string   `json:"end_session_endpoint,omitempty"`
+	ScopesSupported                            []string `json:"scopes_supported"`
+	ResponseTypesSupported                     []string `json:"response_types_supported"`
+	ResponseModesSupported                     []string `json:"response_modes_supported,omitempty"`
+	GrantTypesSupported                        []string `json:"grant_types_supported,omitempty"`
+	SubjectTypesSupported                      []string `json:"subject_types_supported"`
+	IDTokenSigningAlgValuesSupported           []string `json:"id_token_signing_alg_values_supported"`
+	TokenEndpointAuthMethodsSupported          []string `json:"token_endpoint_auth_methods_supported,omitempty"`
+	RevocationEndpointAuthMethodsSupported     []string `json:"revocation_endpoint_auth_methods_supported,omitempty"`
+	IntrospectionEndpointAuthMethodsSupported  []string `json:"introspection_endpoint_auth_methods_supported,omitempty"`
+	CodeChallengeMethodsSupported              []string `json:"code_challenge_methods_supported,omitempty"`
+	PromptValuesSupported                      []string `json:"prompt_values_supported,omitempty"`
+	ClaimsSupported                            []string `json:"claims_supported"`
+	ClaimsParameterSupported                   bool     `json:"claims_parameter_supported"`
+	RequestParameterSupported                  bool     `json:"request_parameter_supported"`
+	RequestURIParameterSupported               bool     `json:"request_uri_parameter_supported"`
+	AuthorizationResponseIssParameterSupported bool     `json:"authorization_response_iss_parameter_supported"`
 }
 
 // ActorClaim identifies the acting party in a delegation scenario
@@ -397,6 +537,9 @@ type ActorClaim struct {
 
 // JWTClaims represents JWT token claims
 type JWTClaims struct {
+	// Jti makes every token unique even when issued in the same second with
+	// identical claims; tokens are stored by hash under a unique index
+	Jti      string      `json:"jti,omitempty"`
 	Sub      string      `json:"sub"`
 	Aud      string      `json:"aud"`
 	Iss      string      `json:"iss"`
@@ -449,20 +592,22 @@ func (c *JWTClaims) GetAudience() (jwt.ClaimStrings, error) {
 
 // CreateClientRequest represents a request to create a new client
 type CreateClientRequest struct {
-	Name         string   `json:"name" binding:"required"`
-	RedirectURIs []string `json:"redirect_uris" binding:"required"`
-	GrantTypes   []string `json:"grant_types" binding:"required"`
-	Scopes       []string `json:"scopes" binding:"required"`
-	IsPublic     bool     `json:"is_public"`
+	Name                   string   `json:"name" binding:"required"`
+	RedirectURIs           []string `json:"redirect_uris" binding:"required"`
+	PostLogoutRedirectURIs []string `json:"post_logout_redirect_uris"`
+	GrantTypes             []string `json:"grant_types" binding:"required"`
+	Scopes                 []string `json:"scopes" binding:"required"`
+	IsPublic               bool     `json:"is_public"`
 }
 
 // UpdateClientRequest represents a request to update a client
 type UpdateClientRequest struct {
-	Name         string   `json:"name"`
-	RedirectURIs []string `json:"redirect_uris"`
-	GrantTypes   []string `json:"grant_types"`
-	Scopes       []string `json:"scopes"`
-	IsPublic     *bool    `json:"is_public"`
+	Name                   string   `json:"name"`
+	RedirectURIs           []string `json:"redirect_uris"`
+	PostLogoutRedirectURIs []string `json:"post_logout_redirect_uris"`
+	GrantTypes             []string `json:"grant_types"`
+	Scopes                 []string `json:"scopes"`
+	IsPublic               *bool    `json:"is_public"`
 }
 
 // CreateUserRequest represents a request to create a new user
@@ -562,6 +707,12 @@ type AuthorizeRequest struct {
 	CodeChallenge       string `form:"code_challenge"`
 	CodeChallengeMethod string `form:"code_challenge_method"`
 	Nonce               string `form:"nonce"`
+	// Prompt is a space-delimited list of none, login, consent, select_account
+	// (OIDC Core §3.1.2.1)
+	Prompt string `form:"prompt"`
+	// MaxAge is the allowable elapsed time in seconds since the user last
+	// authenticated; empty when not requested
+	MaxAge string `form:"max_age"`
 }
 
 // TokenRequest represents an OAuth token request

@@ -22,13 +22,19 @@ type Config struct {
 	Port      string
 	GinMode   string
 
-	// JWT
-	JWTSecret string
+	// JWT. JWTSecret also keys the CSRF cookie HMAC, so it is required
+	// even when tokens are signed with RS256/ES256.
+	JWTSecret               string
+	JWTSigningAlg           string
+	JWTSigningKeyFile       string
+	JWTVerificationKeyFiles string
 
 	// Security
 	BcryptCost                int
 	AccessTokenDuration       time.Duration
 	RefreshTokenDuration      time.Duration
+	IDTokenDuration           time.Duration
+	SessionDuration           time.Duration
 	AuthorizationCodeDuration time.Duration
 	DeviceCodeDuration        time.Duration
 	DeviceCodePollInterval    int
@@ -81,9 +87,14 @@ func Load() (*Config, error) {
 	viper.BindEnv("server.port", "PORT")
 	viper.BindEnv("server.gin_mode", "GIN_MODE")
 	viper.BindEnv("jwt.secret", "JWT_SECRET")
+	viper.BindEnv("jwt.signing_alg", "JWT_SIGNING_ALG")
+	viper.BindEnv("jwt.signing_key_file", "JWT_SIGNING_KEY_FILE")
+	viper.BindEnv("jwt.verification_key_files", "JWT_VERIFICATION_KEY_FILES")
 	viper.BindEnv("security.bcrypt_cost", "BCRYPT_COST")
 	viper.BindEnv("security.access_token_duration", "ACCESS_TOKEN_DURATION")
 	viper.BindEnv("security.refresh_token_duration", "REFRESH_TOKEN_DURATION")
+	viper.BindEnv("security.id_token_duration", "ID_TOKEN_DURATION")
+	viper.BindEnv("security.session_duration", "SESSION_DURATION")
 	viper.BindEnv("security.authorization_code_duration", "AUTHORIZATION_CODE_DURATION")
 	viper.BindEnv("security.device_code_duration", "DEVICE_CODE_DURATION")
 	viper.BindEnv("security.device_code_poll_interval", "DEVICE_CODE_POLL_INTERVAL")
@@ -128,12 +139,17 @@ func Load() (*Config, error) {
 		GinMode:   viper.GetString("server.gin_mode"),
 
 		// JWT
-		JWTSecret: viper.GetString("jwt.secret"),
+		JWTSecret:               viper.GetString("jwt.secret"),
+		JWTSigningAlg:           viper.GetString("jwt.signing_alg"),
+		JWTSigningKeyFile:       viper.GetString("jwt.signing_key_file"),
+		JWTVerificationKeyFiles: viper.GetString("jwt.verification_key_files"),
 
 		// Security
 		BcryptCost:                viper.GetInt("security.bcrypt_cost"),
 		AccessTokenDuration:       time.Duration(viper.GetInt("security.access_token_duration")) * time.Second,
 		RefreshTokenDuration:      time.Duration(viper.GetInt("security.refresh_token_duration")) * time.Second,
+		IDTokenDuration:           time.Duration(viper.GetInt("security.id_token_duration")) * time.Second,
+		SessionDuration:           time.Duration(viper.GetInt("security.session_duration")) * time.Second,
 		AuthorizationCodeDuration: time.Duration(viper.GetInt("security.authorization_code_duration")) * time.Second,
 		DeviceCodeDuration:        time.Duration(viper.GetInt("security.device_code_duration")) * time.Second,
 		DeviceCodePollInterval:    viper.GetInt("security.device_code_poll_interval"),
@@ -179,11 +195,16 @@ func setDefaults() {
 
 	// JWT defaults
 	viper.SetDefault("jwt.secret", "your-super-secret-jwt-key-minimum-32-characters-long")
+	viper.SetDefault("jwt.signing_alg", "RS256")
+	viper.SetDefault("jwt.signing_key_file", "")
+	viper.SetDefault("jwt.verification_key_files", "")
 
 	// Security defaults
 	viper.SetDefault("security.bcrypt_cost", 12)
 	viper.SetDefault("security.access_token_duration", 3600)
 	viper.SetDefault("security.refresh_token_duration", 2592000)
+	viper.SetDefault("security.id_token_duration", 3600)
+	viper.SetDefault("security.session_duration", 86400)
 	viper.SetDefault("security.authorization_code_duration", 600)
 	viper.SetDefault("security.device_code_duration", 600)
 	viper.SetDefault("security.device_code_poll_interval", 5)

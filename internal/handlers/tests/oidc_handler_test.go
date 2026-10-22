@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"shieldgate/internal/handlers"
+	"shieldgate/internal/jwtkeys"
 	"shieldgate/internal/middleware"
 	"shieldgate/internal/models"
 	"shieldgate/tests/utils"
@@ -32,7 +33,7 @@ func newOIDCRouter(
 	logger := logrus.New()
 	logger.SetLevel(logrus.FatalLevel)
 
-	handler := handlers.NewOAuthHandler(utils.CreateTestConfig(), mockTenant, mockUser, mockClient, mockAuth, logger)
+	handler := handlers.NewOAuthHandler(utils.CreateTestConfig(), mockTenant, mockUser, mockClient, mockAuth, preConsented(), logger)
 	r := gin.New()
 	r.SetFuncMap(template.FuncMap{
 		"contains": func(s, substr string) bool { return strings.Contains(s, substr) },
@@ -44,8 +45,15 @@ func newOIDCRouter(
 
 // --- HandleJWKS ---
 
-func TestHandleJWKS_ReturnsWellFormedJWK(t *testing.T) {
-	r := newOIDCRouter(new(MockTenantService), new(MockUserService), new(MockClientService), new(MockAuthService))
+func TestHandleJWKS_ReturnsPublicKeysFromAuthService(t *testing.T) {
+	mockAuth := new(MockAuthService)
+	key, err := jwtkeys.Generate(jwtkeys.AlgRS256)
+	require.NoError(t, err)
+	ks, err := jwtkeys.NewKeySet(key)
+	require.NoError(t, err)
+	jwks := ks.JWKS()
+	mockAuth.On("GetJWKS", mock.Anything).Return(&jwks, nil)
+	r := newOIDCRouter(new(MockTenantService), new(MockUserService), new(MockClientService), mockAuth)
 
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil)
@@ -60,12 +68,16 @@ func TestHandleJWKS_ReturnsWellFormedJWK(t *testing.T) {
 	require.True(t, ok, "response must have 'keys' array")
 	require.NotEmpty(t, keys, "keys array must not be empty")
 
-	key, ok := keys[0].(map[string]interface{})
+	jwk, ok := keys[0].(map[string]interface{})
 	require.True(t, ok)
-	assert.Equal(t, "oct", key["kty"])
-	assert.Equal(t, "sig", key["use"])
-	assert.Equal(t, "HS256", key["alg"])
-	assert.NotEmpty(t, key["kid"])
+	assert.Equal(t, "RSA", jwk["kty"])
+	assert.Equal(t, "sig", jwk["use"])
+	assert.Equal(t, "RS256", jwk["alg"])
+	assert.Equal(t, ks.ActiveKeyID(), jwk["kid"])
+	assert.NotEmpty(t, jwk["n"])
+	assert.NotEmpty(t, jwk["e"])
+	assert.NotContains(t, jwk, "d", "private exponent must never be published")
+	assert.Contains(t, w.Header().Get("Cache-Control"), "max-age=")
 }
 
 // --- HandleDiscovery ---
@@ -115,17 +127,18 @@ func TestHandleUserInfo_ValidToken_ReturnsClaims(t *testing.T) {
 	token := utils.CreateTestJWT(cfg, userID, clientID, tenantID, "openid profile email")
 
 	mockAuth := new(MockAuthService)
+	verified := true
 	mockAuth.On("GetUserInfo", mock.Anything, tenantID, token).Return(&models.UserInfo{
 		Sub:           userID.String(),
 		Name:          "Test User",
 		Email:         "test@example.com",
-		EmailVerified: true,
+		EmailVerified: &verified,
 	}, nil)
 
 	gin.SetMode(gin.TestMode)
 	logger := logrus.New()
 	logger.SetLevel(logrus.FatalLevel)
-	handler := handlers.NewOAuthHandler(utils.CreateTestConfig(), new(MockTenantService), new(MockUserService), new(MockClientService), mockAuth, logger)
+	handler := handlers.NewOAuthHandler(utils.CreateTestConfig(), new(MockTenantService), new(MockUserService), new(MockClientService), mockAuth, preConsented(), logger)
 
 	r := gin.New()
 	// Pre-inject tenant context (simulates TenantContext middleware with JWT)
@@ -154,7 +167,7 @@ func TestHandleUserInfo_MissingToken_Returns401(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	logger := logrus.New()
 	logger.SetLevel(logrus.FatalLevel)
-	handler := handlers.NewOAuthHandler(utils.CreateTestConfig(), new(MockTenantService), new(MockUserService), new(MockClientService), new(MockAuthService), logger)
+	handler := handlers.NewOAuthHandler(utils.CreateTestConfig(), new(MockTenantService), new(MockUserService), new(MockClientService), new(MockAuthService), preConsented(), logger)
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {

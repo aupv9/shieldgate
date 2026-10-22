@@ -27,6 +27,8 @@ func CreateTestConfig() *config.Config {
 		JWTSecret:                 "test-secret-key-for-testing-purposes",
 		AccessTokenDuration:       time.Hour,
 		RefreshTokenDuration:      24 * time.Hour,
+		IDTokenDuration:           time.Hour,
+		SessionDuration:           8 * time.Hour,
 		AuthorizationCodeDuration: 10 * time.Minute,
 		DeviceCodeDuration:        10 * time.Minute,
 		DeviceCodePollInterval:    5,

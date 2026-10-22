@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"shieldgate/config"
+	"shieldgate/internal/jwtkeys"
 	"shieldgate/tests/utils"
 )
 
@@ -22,7 +23,7 @@ func testConfig() *config.Config {
 func setupRouter(cfg *config.Config) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	r.Use(RequireAuth(cfg))
+	r.Use(RequireAuth(jwtkeys.NewHMAC(cfg.JWTSecret)))
 	r.GET("/protected", func(c *gin.Context) {
 		userID, err := GetUserID(c)
 		if err != nil {
@@ -132,28 +133,28 @@ func TestExtractTenantFromJWT_ValidToken(t *testing.T) {
 	tenantID := uuid.New()
 	token := utils.CreateTestJWT(cfg, uuid.New(), uuid.New(), tenantID, "read")
 
-	result, err := extractTenantFromJWT(token, cfg.JWTSecret)
+	result, err := extractTenantFromJWT(token, jwtkeys.NewHMAC(cfg.JWTSecret))
 	require.NoError(t, err)
 	assert.Equal(t, tenantID, result)
 }
 
 func TestExtractTenantFromJWT_InvalidToken(t *testing.T) {
 	cfg := testConfig()
-	_, err := extractTenantFromJWT("garbage.token.here", cfg.JWTSecret)
+	_, err := extractTenantFromJWT("garbage.token.here", jwtkeys.NewHMAC(cfg.JWTSecret))
 	assert.Error(t, err)
 }
 
 func TestExtractTenantFromJWT_WrongSecret(t *testing.T) {
 	cfg := testConfig()
 	token := utils.CreateTamperedJWT(cfg, uuid.New(), uuid.New(), uuid.New())
-	_, err := extractTenantFromJWT(token, cfg.JWTSecret)
+	_, err := extractTenantFromJWT(token, jwtkeys.NewHMAC(cfg.JWTSecret))
 	assert.Error(t, err)
 }
 
 func TestExtractTenantFromJWT_ExpiredToken(t *testing.T) {
 	cfg := testConfig()
 	token := utils.CreateExpiredJWT(cfg, uuid.New(), uuid.New(), uuid.New())
-	_, err := extractTenantFromJWT(token, cfg.JWTSecret)
+	_, err := extractTenantFromJWT(token, jwtkeys.NewHMAC(cfg.JWTSecret))
 	assert.Error(t, err)
 }
 
@@ -163,7 +164,7 @@ func TestTenantContext_XTenantIDHeader(t *testing.T) {
 	cfg := testConfig()
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	r.Use(TenantContext(cfg))
+	r.Use(TenantContext(jwtkeys.NewHMAC(cfg.JWTSecret), nil))
 	r.GET("/api/resource", func(c *gin.Context) {
 		id, err := GetTenantID(c)
 		if err != nil {
@@ -187,7 +188,7 @@ func TestTenantContext_MissingTenant_ReturnsUnauthorized(t *testing.T) {
 	cfg := testConfig()
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	r.Use(TenantContext(cfg))
+	r.Use(TenantContext(jwtkeys.NewHMAC(cfg.JWTSecret), nil))
 	r.GET("/api/resource", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
@@ -206,7 +207,7 @@ func TestTenantContext_JWTExtractsTenant(t *testing.T) {
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	r.Use(TenantContext(cfg))
+	r.Use(TenantContext(jwtkeys.NewHMAC(cfg.JWTSecret), nil))
 	r.GET("/api/resource", func(c *gin.Context) {
 		id, err := GetTenantID(c)
 		if err != nil {
