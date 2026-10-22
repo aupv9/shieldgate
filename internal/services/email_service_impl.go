@@ -325,6 +325,10 @@ func (s *EmailServiceImpl) processEmail(ctx context.Context, email *models.Email
 	email.Status = "sent"
 	now := time.Now()
 	email.SentAt = &now
+	// Bodies can hold live links (password reset, verification); once sent
+	// they are not needed, so they do not linger in the database
+	email.BodyHTML = ""
+	email.BodyText = ""
 
 	if err := s.queueRepo.Update(ctx, email); err != nil {
 		return fmt.Errorf("failed to update email status: %w", err)
