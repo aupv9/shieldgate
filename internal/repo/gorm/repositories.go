@@ -29,5 +29,6 @@ func NewRepositories(db *gorm.DB) *repo.Repositories {
 		EmailVerification: NewEmailVerificationRepository(db),
 		PasswordReset:     NewPasswordResetRepository(db),
 		Idempotency:       NewIdempotencyRepository(db),
+		MFA:               NewMFARepository(db),
 	}
 }

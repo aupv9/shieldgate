@@ -106,7 +106,7 @@ func TestExchangeAuthorizationCode_Success_StoresHashedTokens(t *testing.T) {
 	user := seedUser(t, repos, tenantID)
 	require.NoError(t, repos.Client.Create(ctx, &models.Client{ID: clientUUID, TenantID: tenantID, ClientID: "web-app"}))
 
-	authCode, err := svc.GenerateAuthorizationCode(ctx, tenantID, clientUUID, user.ID, "https://app/cb", "openid read", "", "", "", time.Now())
+	authCode, err := svc.GenerateAuthorizationCode(ctx, tenantID, clientUUID, user.ID, "https://app/cb", "openid read", "", "", "", time.Now(), nil)
 	require.NoError(t, err)
 
 	tokens, err := svc.ExchangeAuthorizationCode(ctx, tenantID, authCode.Code, clientUUID.String(), "", "https://app/cb", "")
@@ -136,7 +136,7 @@ func TestExchangeAuthorizationCode_Reuse_RevokesIssuedTokens(t *testing.T) {
 	tenantID, clientUUID := uuid.New(), uuid.New()
 	userID := uuid.New()
 
-	authCode, err := svc.GenerateAuthorizationCode(ctx, tenantID, clientUUID, userID, "https://app/cb", "read", "", "", "", time.Now())
+	authCode, err := svc.GenerateAuthorizationCode(ctx, tenantID, clientUUID, userID, "https://app/cb", "read", "", "", "", time.Now(), nil)
 	require.NoError(t, err)
 
 	tokens, err := svc.ExchangeAuthorizationCode(ctx, tenantID, authCode.Code, clientUUID.String(), "", "https://app/cb", "")

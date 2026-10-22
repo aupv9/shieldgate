@@ -25,7 +25,9 @@ type OAuthHandler struct {
 	clientService  services.ClientService
 	authService    services.AuthService
 	sessionService services.SessionService
-	logger         *logrus.Logger
+	// mfaService may be nil, in which case no second factor is asked
+	mfaService services.MFAService
+	logger     *logrus.Logger
 }
 
 // NewOAuthHandler creates a new OAuth handler
@@ -36,6 +38,7 @@ func NewOAuthHandler(
 	clientService services.ClientService,
 	authService services.AuthService,
 	sessionService services.SessionService,
+	mfaService services.MFAService,
 	logger *logrus.Logger,
 ) *OAuthHandler {
 	return &OAuthHandler{
@@ -45,6 +48,7 @@ func NewOAuthHandler(
 		clientService:  clientService,
 		authService:    authService,
 		sessionService: sessionService,
+		mfaService:     mfaService,
 		logger:         logger,
 	}
 }
@@ -56,6 +60,7 @@ func (h *OAuthHandler) RegisterRoutes(router *gin.RouterGroup) {
 	{
 		oauth.GET("/authorize", h.HandleAuthorize)
 		oauth.POST("/login", h.HandleLogin)
+		oauth.POST("/login/mfa", h.HandleLoginMFA)
 		oauth.POST("/consent", h.HandleConsent)
 		oauth.GET("/logout", h.HandleLogout)
 		oauth.POST("/logout", h.HandleLogout)
@@ -65,6 +70,7 @@ func (h *OAuthHandler) RegisterRoutes(router *gin.RouterGroup) {
 		oauth.POST("/device_authorization", h.HandleDeviceAuthorization)
 		oauth.GET("/device", h.HandleDeviceVerificationPage)
 		oauth.POST("/device", h.HandleDeviceVerification)
+		oauth.POST("/device/mfa", h.HandleDeviceMFA)
 	}
 
 	// OpenID Connect endpoints

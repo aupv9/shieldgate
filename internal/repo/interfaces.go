@@ -107,6 +107,35 @@ type Repositories struct {
 	EmailVerification EmailVerificationRepository
 	PasswordReset     PasswordResetRepository
 	Idempotency       IdempotencyRepository
+	MFA               MFARepository
+}
+
+// MFARepository stores TOTP authenticators and recovery codes
+type MFARepository interface {
+	// Get returns the user's authenticator, confirmed or pending, or
+	// models.ErrMFANotEnabled
+	Get(ctx context.Context, tenantID, userID uuid.UUID) (*models.UserMFA, error)
+	// SavePending stores a new unconfirmed authenticator, replacing any
+	// pending one; it fails with models.ErrMFAAlreadyEnabled if one is confirmed
+	SavePending(ctx context.Context, mfa *models.UserMFA) error
+	// Confirm enables the pending authenticator, records step as used and
+	// replaces the recovery codes, atomically
+	Confirm(ctx context.Context, tenantID, userID uuid.UUID, step int64, recoveryCodeHashes []string) error
+	// UseStep records a TOTP step as used and clears failures; it reports
+	// false if that step (or a later one) was already used
+	UseStep(ctx context.Context, tenantID, userID uuid.UUID, step int64) (bool, error)
+	// UseRecoveryCode consumes an unused recovery code and clears failures;
+	// it reports false if no unused code has that hash
+	UseRecoveryCode(ctx context.Context, tenantID, userID uuid.UUID, codeHash string) (bool, error)
+	// RecordFailure counts a failed verification and, at maxFailures,
+	// locks verification until lockUntil
+	RecordFailure(ctx context.Context, tenantID, userID uuid.UUID, maxFailures int, lockUntil time.Time) error
+	// ReplaceRecoveryCodes discards all recovery codes and stores new ones
+	ReplaceRecoveryCodes(ctx context.Context, tenantID, userID uuid.UUID, codeHashes []string) error
+	// CountUnusedRecoveryCodes counts recovery codes still available
+	CountUnusedRecoveryCodes(ctx context.Context, tenantID, userID uuid.UUID) (int64, error)
+	// Delete removes the authenticator and recovery codes
+	Delete(ctx context.Context, tenantID, userID uuid.UUID) error
 }
 
 // IdempotencyRepository stores Idempotency-Key records
