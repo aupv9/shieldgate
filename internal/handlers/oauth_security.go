@@ -14,6 +14,10 @@ import (
 
 const csrfCookieName = "sg_csrf"
 
+// maxNonceLength bounds the OIDC nonce, which is stored with the
+// authorization code and echoed in the ID token
+const maxNonceLength = 512
+
 // clientCredentialsFromRequest extracts OAuth client credentials from either
 // the Authorization: Basic header (client_secret_basic, RFC 6749 §2.3.1 — the
 // values are form-urlencoded before being base64-encoded) or the request body

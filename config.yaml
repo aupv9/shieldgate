@@ -17,12 +17,20 @@ server:
 # JWT configuration
 jwt:
   secret: "your-super-secret-jwt-key-minimum-32-characters-long"
+  # RS256 (default), ES256, or HS256 (legacy, no JWKS)
+  signing_alg: "RS256"
+  # PEM private key; empty generates an ephemeral key outside release mode
+  signing_key_file: ""
+  # Comma-separated PEM keys accepted for verification during rotation
+  verification_key_files: ""
 
 # Security configuration
 security:
   bcrypt_cost: 12
   access_token_duration: 3600  # seconds
   refresh_token_duration: 2592000  # seconds (30 days)
+  id_token_duration: 3600  # seconds
+  session_duration: 86400  # seconds; SSO session lifetime (re-login after this)
   authorization_code_duration: 600  # seconds (10 minutes)
 
 # CORS configuration

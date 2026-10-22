@@ -159,6 +159,11 @@ func (s *userServiceImpl) Update(ctx context.Context, tenantID, userID uuid.UUID
 		}).Error("failed to update user")
 		return nil, fmt.Errorf("failed to update user: %w", err)
 	}
+	if req.Password != "" {
+		if err := s.endSessions(ctx, tenantID, userID); err != nil {
+			return nil, err
+		}
+	}
 
 	s.logger.WithFields(logrus.Fields{
 		"tenant_id": tenantID,
@@ -182,6 +187,9 @@ func (s *userServiceImpl) Delete(ctx context.Context, tenantID, userID uuid.UUID
 			"user_id":   userID,
 		}).Error("failed to delete user")
 		return fmt.Errorf("failed to delete user: %w", err)
+	}
+	if err := s.endSessions(ctx, tenantID, userID); err != nil {
+		return err
 	}
 
 	s.logger.WithFields(logrus.Fields{
@@ -261,7 +269,13 @@ func (s *userServiceImpl) UpdateStatus(ctx context.Context, tenantID, userID uui
 	}
 	user.Status = status
 	user.UpdatedAt = time.Now()
-	return s.repos.User.Update(ctx, user)
+	if err := s.repos.User.Update(ctx, user); err != nil {
+		return err
+	}
+	if status == models.UserStatusSuspended || status == models.UserStatusLocked {
+		return s.endSessions(ctx, tenantID, userID)
+	}
+	return nil
 }
 
 func (s *userServiceImpl) LockUser(ctx context.Context, tenantID, userID uuid.UUID, reason string, lockedUntil *time.Time) error {
@@ -275,7 +289,10 @@ func (s *userServiceImpl) LockUser(ctx context.Context, tenantID, userID uuid.UU
 	user.LockedUntil = lockedUntil
 	user.UpdatedAt = now
 	_ = reason // reserved for audit/eventing; do not persist in user model for now
-	return s.repos.User.Update(ctx, user)
+	if err := s.repos.User.Update(ctx, user); err != nil {
+		return err
+	}
+	return s.endSessions(ctx, tenantID, userID)
 }
 
 func (s *userServiceImpl) UnlockUser(ctx context.Context, tenantID, userID uuid.UUID) error {
@@ -341,6 +358,8 @@ func (s *userServiceImpl) RecordLoginAttempt(ctx context.Context, tenantID uuid.
 	user.FailedLoginAttempts++
 	user.UpdatedAt = now
 
+	// Lockout after failed attempts deliberately keeps existing SSO sessions:
+	// otherwise anyone who knows a user's email could sign them out
 	if user.FailedLoginAttempts >= MaxLoginAttempts {
 		lockedUntil := now.Add(LockoutDuration)
 		user.Status = models.UserStatusLocked
@@ -387,11 +406,31 @@ func (s *userServiceImpl) ChangePassword(ctx context.Context, tenantID, userID u
 		}).Error("failed to change password")
 		return fmt.Errorf("failed to change password: %w", err)
 	}
+	if err := s.endSessions(ctx, tenantID, userID); err != nil {
+		return err
+	}
 
 	s.logger.WithFields(logrus.Fields{
 		"tenant_id": tenantID,
 		"user_id":   userID,
 	}).Info("password changed successfully")
 
+	return nil
+}
+
+// endSessions signs the user out of every SSO session, so a suspended,
+// locked or deleted account, or a changed password, takes effect in the
+// browser too
+func (s *userServiceImpl) endSessions(ctx context.Context, tenantID, userID uuid.UUID) error {
+	if s.repos.Session == nil {
+		return nil
+	}
+	if err := s.repos.Session.DeleteByUserID(ctx, tenantID, userID); err != nil {
+		s.logger.WithError(err).WithFields(logrus.Fields{
+			"tenant_id": tenantID,
+			"user_id":   userID,
+		}).Error("failed to end user sessions")
+		return fmt.Errorf("failed to end user sessions: %w", err)
+	}
 	return nil
 }

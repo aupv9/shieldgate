@@ -313,7 +313,9 @@ INSERT INTO permissions (name, display_name, description, resource, action, is_s
 ('tenants.delete', 'Delete Tenants', 'Delete tenants', 'tenant', 'delete', true),
 ('tenants.manage', 'Manage Tenants', 'Full tenant management access', 'tenant', 'manage', true)
 
-ON CONFLICT (name) DO NOTHING;
+-- The predicate matches both a plain unique index on name and the partial
+-- one (WHERE deleted_at IS NULL) created by the server's own migrations
+ON CONFLICT (name) WHERE deleted_at IS NULL DO NOTHING;
 
 -- =====================================================
 -- CLEANUP FUNCTIONS
