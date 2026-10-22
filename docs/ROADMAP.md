@@ -75,16 +75,18 @@ Bổ sung ngoài kế hoạch: PKCE compare dùng constant-time; `email_verified
 
 Sửa thêm trong Phase 2: `/authorize` không còn redirect tới `redirect_uri` chưa được xác thực (open redirect); redirect lỗi có `state`; token endpoint truyền nhầm `client_id` công khai thay vì UUID nên code/refresh grant qua HTTP luôn `invalid_grant`; access token trùng nhau khi cấp trong cùng một giây.
 
-### Phase 3 — Session, Consent & SSO (~2 tuần)
+### Phase 3 — Session, Consent & SSO ✅ HOÀN THÀNH (2026-10-21)
 > Mục tiêu: trải nghiệm authorization server thật sự (đăng nhập 1 lần, consent, logout).
 
 | Task | Gaps | Việc cụ thể |
 |------|------|-------------|
-| 3.1 Server-side session | G13 | Session store (Redis), cookie `HttpOnly+Secure+SameSite`; /authorize check session → skip login. |
-| 3.2 `prompt` & `max_age` | G13 | Hỗ trợ `prompt=none/login/consent`, `max_age`, trả `login_required`/`consent_required` đúng chuẩn. |
-| 3.3 Consent screen | G14 | Trang consent hiển thị scope; lưu granted consent per (user, client, scope); skip nếu đã grant. |
-| 3.4 Logout | G13 | `end_session_endpoint` (RP-initiated logout), revoke session + `post_logout_redirect_uri` validation. |
-| 3.5 Tenant resolution theo domain | G18 | Resolve tenant từ `Host` header / path prefix cho browser flows; giữ `X-Tenant-ID` cho API M2M. |
+| 3.1 Server-side session | G13 | ✅ Bảng `sessions` trong Postgres (Redis là optional nên không dùng làm store); cookie `sg_session` 256-bit, chỉ lưu hash, `HttpOnly`+`SameSite=Lax`(+`Secure` khi https); `SESSION_DURATION`; có session thì /authorize bỏ qua login; login luôn cấp token mới (chống session fixation); `auth_time` = lần nhập mật khẩu cuối. |
+| 3.2 `prompt` & `max_age` | G13 | ✅ `prompt=none/login/consent/select_account`, `max_age`; `login_required`/`consent_required`; `none` kết hợp giá trị khác → `invalid_request`. |
+| 3.3 Consent screen | G14 | ✅ Trang `consent.html` (Allow/Deny, CSRF); bảng `consents` lưu union scope per (tenant, user, client); chỉ hỏi lại khi có scope mới; deny → `access_denied`. |
+| 3.4 Logout | G13 | ✅ `GET/POST /oauth/logout` (OIDC RP-Initiated Logout): `id_token_hint` (chấp nhận token hết hạn), `post_logout_redirect_uri` phải khớp `clients.post_logout_redirect_uris`; không có hint hợp lệ cho đúng user → trang xác nhận (chống logout CSRF); discovery có `end_session_endpoint`. |
+| 3.5 Tenant resolution theo domain | G18 | ✅ `Host` → `tenants.domain` (bỏ port, không phân biệt hoa thường, cache 1 phút có giới hạn, tenant inactive bị bỏ qua); thứ tự: JWT → `X-Tenant-ID` → subdomain UUID → domain. Path prefix chưa làm. |
+
+Sửa thêm trong Phase 3: session SSO bị thu hồi khi user bị suspend/lock (admin)/xoá hoặc đổi mật khẩu; `/authorize` bỏ session của user đã xoá/suspend; lockout do sai mật khẩu **không** huỷ session (tránh kẻ tấn công đăng xuất nạn nhân); job nền 15 phút dọn session hết hạn và token/code hết hạn (`CleanupExpiredTokens` trước đó không được gọi ở đâu).
 
 ### Bổ sung — Grant types mở rộng ✅ HOÀN THÀNH (2026-08-02)
 

@@ -25,8 +25,9 @@ const (
 	ClientIDKey  = "client_id"
 )
 
-// TenantContext middleware extracts and validates tenant context
-func TenantContext(keys *jwtkeys.KeySet) gin.HandlerFunc {
+// TenantContext middleware extracts and validates tenant context. domains may
+// be nil, in which case tenants are not resolved from the Host header.
+func TenantContext(keys *jwtkeys.KeySet, domains *DomainTenantResolver) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// Generate request ID for tracing
 		requestID := uuid.New().String()
@@ -35,7 +36,7 @@ func TenantContext(keys *jwtkeys.KeySet) gin.HandlerFunc {
 
 		// For OAuth endpoints, try to extract tenant but don't fail if not found
 		if isOAuthEndpoint(c.Request.URL.Path) {
-			if tenantID, err := extractTenantID(c, keys); err == nil {
+			if tenantID, err := extractTenantID(c, keys, domains); err == nil {
 				c.Set(TenantIDKey, tenantID)
 				logrus.WithFields(logrus.Fields{
 					"request_id": requestID,
@@ -55,7 +56,7 @@ func TenantContext(keys *jwtkeys.KeySet) gin.HandlerFunc {
 		}
 
 		// Extract tenant ID from various sources
-		tenantID, err := extractTenantID(c, keys)
+		tenantID, err := extractTenantID(c, keys, domains)
 		if err != nil {
 			logrus.WithFields(logrus.Fields{
 				"request_id": requestID,
@@ -219,7 +220,7 @@ func GetClientID(c *gin.Context) (uuid.UUID, error) {
 }
 
 // extractTenantID extracts tenant ID from various request sources
-func extractTenantID(c *gin.Context, keys *jwtkeys.KeySet) (uuid.UUID, error) {
+func extractTenantID(c *gin.Context, keys *jwtkeys.KeySet, domains *DomainTenantResolver) (uuid.UUID, error) {
 	// 1. Try to extract from JWT token (preferred for authenticated requests)
 	if authHeader := c.GetHeader("Authorization"); authHeader != "" {
 		if strings.HasPrefix(authHeader, "Bearer ") {
@@ -240,6 +241,14 @@ func extractTenantID(c *gin.Context, keys *jwtkeys.KeySet) (uuid.UUID, error) {
 	// 3. Try to extract from subdomain (e.g., <uuid>.api.example.com)
 	if tenantID, err := extractTenantFromSubdomain(c.Request.Host); err == nil {
 		return tenantID, nil
+	}
+
+	// 4. Try the tenant's registered domain (e.g., login.acme.com) — the
+	// only option for browser redirects, which cannot carry X-Tenant-ID
+	if domains != nil {
+		if tenantID, ok := domains.Resolve(c.Request.Context(), c.Request.Host); ok {
+			return tenantID, nil
+		}
 	}
 
 	return uuid.Nil, fmt.Errorf("tenant ID not found in request")
@@ -274,12 +283,7 @@ func extractTenantFromSubdomain(host string) (uuid.UUID, error) {
 // isOAuthEndpoint checks if the path is an OAuth/OIDC endpoint
 func isOAuthEndpoint(path string) bool {
 	oauthPaths := []string{
-		"/oauth/authorize",
-		"/oauth/token",
-		"/oauth/introspect",
-		"/oauth/revoke",
-		"/oauth/device", // covers /oauth/device and /oauth/device_authorization
-		"/oauth/login",
+		"/oauth/",       // authorize, login, consent, logout, token, device, ...
 		"/.well-known/", // discovery, RFC 8414 metadata, JWKS
 		"/userinfo",
 	}

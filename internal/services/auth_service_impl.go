@@ -480,6 +480,7 @@ func (s *authServiceImpl) GetDiscoveryDocument(ctx context.Context) (*models.Ope
 		RevocationEndpoint:          base + "/oauth/revoke",
 		IntrospectionEndpoint:       base + "/oauth/introspect",
 		DeviceAuthorizationEndpoint: base + "/oauth/device_authorization",
+		EndSessionEndpoint:          base + "/oauth/logout",
 		ScopesSupported:             []string{ScopeOpenID, ScopeProfile, ScopeEmail, ScopePhone, "read", "write"},
 		ResponseTypesSupported:      []string{"code"},
 		ResponseModesSupported:      []string{"query"},
@@ -497,6 +498,7 @@ func (s *authServiceImpl) GetDiscoveryDocument(ctx context.Context) (*models.Ope
 		RevocationEndpointAuthMethodsSupported:    clientAuthMethods,
 		IntrospectionEndpointAuthMethodsSupported: clientAuthMethods,
 		CodeChallengeMethodsSupported:             []string{"S256"},
+		PromptValuesSupported:                     []string{"none", "login", "consent", "select_account"},
 		ClaimsSupported: []string{
 			"sub", "iss", "aud", "exp", "iat", "auth_time", "nonce", "at_hash", "tenant_id",
 			"name", "given_name", "family_name", "preferred_username", "picture", "locale", "zoneinfo", "updated_at",
@@ -510,6 +512,19 @@ func (s *authServiceImpl) GetDiscoveryDocument(ctx context.Context) (*models.Ope
 		RequestURIParameterSupported:               false,
 		AuthorizationResponseIssParameterSupported: true,
 	}, nil
+}
+
+func (s *authServiceImpl) ParseIDTokenHint(ctx context.Context, idToken string) (*models.IDTokenClaims, error) {
+	// An id_token_hint may be expired (OIDC RP-Initiated Logout §2), so only
+	// the signature and issuer are checked, not the time-based claims
+	claims := &models.IDTokenClaims{}
+	if _, err := s.keys.Parse(idToken, claims, jwt.WithoutClaimsValidation()); err != nil {
+		return nil, models.ErrInvalidToken
+	}
+	if claims.Iss != s.config.ServerURL {
+		return nil, models.ErrInvalidToken
+	}
+	return claims, nil
 }
 
 func (s *authServiceImpl) GetJWKS(ctx context.Context) (*jwtkeys.JWKSet, error) {
@@ -565,6 +580,11 @@ func (s *authServiceImpl) generateJWTWithSubject(subject string, tenantID, clien
 }
 
 func (s *authServiceImpl) generateRandomString(length int) (string, error) {
+	return randomToken(length)
+}
+
+// randomToken returns length bytes from crypto/rand, base64url-encoded
+func randomToken(length int) (string, error) {
 	bytes := make([]byte, length)
 	if _, err := rand.Read(bytes); err != nil {
 		return "", err

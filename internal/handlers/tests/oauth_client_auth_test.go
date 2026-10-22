@@ -50,6 +50,7 @@ func newHandlerFixture() *handlerFixture {
 		f.userService,
 		f.clientService,
 		f.authService,
+		preConsented(),
 		logger,
 	)
 

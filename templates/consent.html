@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ShieldGate - Authorize Access</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .card {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+            padding: 40px;
+            width: 100%;
+            max-width: 420px;
+        }
+
+        h1 { font-size: 22px; color: #333; margin-bottom: 8px; text-align: center; }
+        .subtitle { color: #666; font-size: 14px; text-align: center; margin-bottom: 24px; }
+        .subtitle strong { color: #333; }
+
+        .scope-permissions {
+            background: #fff3cd;
+            border: 1px solid #ffeaa7;
+            border-radius: 6px;
+            padding: 12px 16px;
+            margin-bottom: 24px;
+        }
+        .scope-permissions h4 { color: #856404; font-size: 14px; margin-bottom: 8px; }
+        .scope-permissions ul { list-style: none; }
+        .scope-permissions li { color: #856404; font-size: 13px; padding: 3px 0; }
+        .scope-permissions li::before { content: "✓ "; font-weight: 600; }
+
+        .actions { display: flex; gap: 12px; }
+        .actions button {
+            flex: 1;
+            padding: 12px;
+            border-radius: 8px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            border: 2px solid #667eea;
+        }
+        .allow { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border-color: transparent; }
+        .deny { background: white; color: #667eea; }
+
+        .note { margin-top: 20px; color: #888; font-size: 12px; text-align: center; line-height: 1.4; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>Authorize {{.client_name}}</h1>
+        <p class="subtitle">
+            {{if .user_email}}Signed in as <strong>{{.user_email}}</strong><br>{{end}}
+            <strong>{{.client_name}}</strong> is requesting access to your account.
+        </p>
+
+        <div class="scope-permissions">
+            <h4>This application will be able to:</h4>
+            <ul>
+                {{if contains .scope "openid"}}<li>Verify your identity</li>{{end}}
+                {{if contains .scope "profile"}}<li>Access your profile details</li>{{end}}
+                {{if contains .scope "email"}}<li>Access your email address</li>{{end}}
+                {{if contains .scope "phone"}}<li>Access your phone number</li>{{end}}
+                {{if contains .scope "read"}}<li>Read your account data</li>{{end}}
+                {{if contains .scope "write"}}<li>Modify your account data</li>{{end}}
+                {{if not .scope}}<li>Access your account</li>{{end}}
+            </ul>
+        </div>
+
+        <form method="POST" action="/oauth/consent">
+            <input type="hidden" name="client_id" value="{{.client_id}}">
+            <input type="hidden" name="redirect_uri" value="{{.redirect_uri}}">
+            <input type="hidden" name="scope" value="{{.scope}}">
+            <input type="hidden" name="state" value="{{.state}}">
+            <input type="hidden" name="code_challenge" value="{{.code_challenge}}">
+            <input type="hidden" name="code_challenge_method" value="{{.code_challenge_method}}">
+            <input type="hidden" name="nonce" value="{{.nonce}}">
+            <input type="hidden" name="prompt" value="{{.prompt}}">
+            <input type="hidden" name="response_type" value="code">
+            <input type="hidden" name="csrf_token" value="{{.csrf_token}}">
+
+            <div class="actions">
+                <button type="submit" name="decision" value="deny" class="deny">Deny</button>
+                <button type="submit" name="decision" value="allow" class="allow">Allow</button>
+            </div>
+        </form>
+
+        <p class="note">You will be redirected to {{.redirect_uri}}.<br>Your choice is remembered for this application.</p>
+    </div>
+</body>
+</html>

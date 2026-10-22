@@ -110,6 +110,7 @@ func main() {
 	userService := services.NewUserService(repos, logger)
 	clientService := services.NewClientService(repos, logger)
 	authService := services.NewAuthService(repos, cfg, jwtKeys, logger)
+	sessionService := services.NewSessionService(repos.Session, repos.Consent, cfg.SessionDuration, logger)
 	roleService := services.NewRoleService(repos.Role, repos.Permission, repos.UserRole, repos.RolePermission, auditService, logger)
 	permissionService := services.NewPermissionService(repos.Permission, repos.Role, repos.UserRole, repos.RolePermission, logger)
 
@@ -131,6 +132,27 @@ func main() {
 		}
 	}()
 
+	// Periodically purge expired codes, tokens and SSO sessions
+	go func() {
+		ticker := time.NewTicker(15 * time.Minute)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-rootCtx.Done():
+				logger.Info("Expired data cleanup shutting down")
+				return
+			case <-ticker.C:
+				if err := authService.CleanupExpiredTokens(rootCtx); err != nil {
+					logger.WithError(err).Error("Failed to clean up expired tokens")
+				}
+				if err := sessionService.CleanupExpiredSessions(rootCtx); err != nil {
+					logger.WithError(err).Error("Failed to clean up expired sessions")
+				}
+			}
+		}
+	}()
+
 	// Setup Gin router
 	if cfg.GinMode != "" {
 		gin.SetMode(cfg.GinMode)
@@ -143,7 +165,9 @@ func main() {
 	router.Use(gin.Recovery())
 	router.Use(middleware.CORS(cfg))
 	router.Use(middleware.RateLimit(cfg))
-	router.Use(middleware.TenantContext(jwtKeys))
+	// Browser flows reach a tenant through its registered domain
+	tenantDomains := middleware.NewDomainTenantResolver(repos.Tenant, time.Minute)
+	router.Use(middleware.TenantContext(jwtKeys, tenantDomains))
 	router.Use(middleware.RequestID())
 
 	// Initialize authorization
@@ -160,7 +184,7 @@ func main() {
 	tenantHandler := handlers.NewTenantHandler(tenantService, logger)
 	userHandler := handlers.NewUserHandler(userService, logger)
 	clientHandler := handlers.NewClientHandler(clientService, logger)
-	oauthHandler := handlers.NewOAuthHandler(cfg, tenantService, userService, clientService, authService, logger)
+	oauthHandler := handlers.NewOAuthHandler(cfg, tenantService, userService, clientService, authService, sessionService, logger)
 	rbacHandler := handlers.NewRBACHandler(roleService, permissionService, auditService, logger)
 	auditHandler := handlers.NewAuditHandler(auditService, logger)
 

@@ -28,6 +28,7 @@ var (
 	ErrInvalidGrant            = errors.New("invalid grant")
 	ErrInvalidScope            = errors.New("invalid scope")
 	ErrInsufficientScope       = errors.New("insufficient scope")
+	ErrSessionNotFound         = errors.New("session not found")
 	ErrExpiredToken            = errors.New("token expired")
 	ErrRevokedToken            = errors.New("token revoked")
 	ErrInvalidToken            = errors.New("invalid token")
@@ -144,6 +145,16 @@ func (a StringArray) Value() (driver.Value, error) {
 	return json.Marshal(a)
 }
 
+// Contains reports whether value is an element, compared exactly
+func (a StringArray) Contains(value string) bool {
+	for _, v := range a {
+		if v == value {
+			return true
+		}
+	}
+	return false
+}
+
 // Scan implements the sql.Scanner interface
 func (a *StringArray) Scan(value interface{}) error {
 	if value == nil {
@@ -211,19 +222,22 @@ type User struct {
 // carries the generated secret exactly once — in the response of the create
 // (or confidential-rotation) call — and is never persisted.
 type Client struct {
-	ID                uuid.UUID      `json:"id" gorm:"type:uuid;primary_key;default:gen_random_uuid()"`
-	TenantID          uuid.UUID      `json:"tenant_id" gorm:"type:uuid;not null;index:idx_clients_tenant_id"`
-	ClientID          string         `json:"client_id" gorm:"not null;size:255;index:idx_clients_tenant_client_id,unique"`
-	ClientSecret      string         `json:"-" gorm:"size:255"`
-	PlainClientSecret string         `json:"client_secret,omitempty" gorm:"-"`
-	Name              string         `json:"name" gorm:"not null;size:255"`
-	RedirectURIs      StringArray    `json:"redirect_uris" gorm:"type:jsonb;not null;default:'[]'"`
-	GrantTypes        StringArray    `json:"grant_types" gorm:"type:jsonb;not null;default:'[]'"`
-	Scopes            StringArray    `json:"scopes" gorm:"type:jsonb;not null;default:'[]'"`
-	IsPublic          bool           `json:"is_public" gorm:"not null;default:false"`
-	CreatedAt         time.Time      `json:"created_at" gorm:"autoCreateTime"`
-	UpdatedAt         time.Time      `json:"updated_at" gorm:"autoUpdateTime"`
-	DeletedAt         gorm.DeletedAt `json:"-" gorm:"index"`
+	ID                uuid.UUID   `json:"id" gorm:"type:uuid;primary_key;default:gen_random_uuid()"`
+	TenantID          uuid.UUID   `json:"tenant_id" gorm:"type:uuid;not null;index:idx_clients_tenant_id"`
+	ClientID          string      `json:"client_id" gorm:"not null;size:255;index:idx_clients_tenant_client_id,unique"`
+	ClientSecret      string      `json:"-" gorm:"size:255"`
+	PlainClientSecret string      `json:"client_secret,omitempty" gorm:"-"`
+	Name              string      `json:"name" gorm:"not null;size:255"`
+	RedirectURIs      StringArray `json:"redirect_uris" gorm:"type:jsonb;not null;default:'[]'"`
+	// PostLogoutRedirectURIs are the only URIs RP-initiated logout may
+	// redirect to (OIDC RP-Initiated Logout §3)
+	PostLogoutRedirectURIs StringArray    `json:"post_logout_redirect_uris" gorm:"type:jsonb;not null;default:'[]'"`
+	GrantTypes             StringArray    `json:"grant_types" gorm:"type:jsonb;not null;default:'[]'"`
+	Scopes                 StringArray    `json:"scopes" gorm:"type:jsonb;not null;default:'[]'"`
+	IsPublic               bool           `json:"is_public" gorm:"not null;default:false"`
+	CreatedAt              time.Time      `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt              time.Time      `json:"updated_at" gorm:"autoUpdateTime"`
+	DeletedAt              gorm.DeletedAt `json:"-" gorm:"index"`
 }
 
 // AuthorizationCode represents an OAuth 2.0 authorization code
@@ -242,6 +256,38 @@ type AuthorizationCode struct {
 	UsedAt              *time.Time `json:"used_at"`
 	ExpiresAt           time.Time  `json:"expires_at" gorm:"not null;index"`
 	CreatedAt           time.Time  `json:"created_at" gorm:"autoCreateTime"`
+}
+
+// Session is a user's single sign-on session at the authorization server.
+// The browser holds a random token in a cookie; only its hash is stored.
+type Session struct {
+	ID        uuid.UUID `json:"id" gorm:"type:uuid;primary_key;default:gen_random_uuid()"`
+	TenantID  uuid.UUID `json:"tenant_id" gorm:"type:uuid;not null;index"`
+	UserID    uuid.UUID `json:"user_id" gorm:"type:uuid;not null;index"`
+	TokenHash string    `json:"-" gorm:"not null;size:255;uniqueIndex"`
+	// AuthTime is when the user last authenticated with credentials
+	AuthTime  time.Time `json:"auth_time" gorm:"not null"`
+	IPAddress string    `json:"ip_address" gorm:"size:45"`
+	UserAgent string    `json:"user_agent" gorm:"type:text"`
+	ExpiresAt time.Time `json:"expires_at" gorm:"not null;index"`
+	CreatedAt time.Time `json:"created_at" gorm:"autoCreateTime"`
+}
+
+// IsExpired reports whether the session has passed its absolute lifetime
+func (s *Session) IsExpired() bool {
+	return !time.Now().Before(s.ExpiresAt)
+}
+
+// Consent records the scopes a user has granted a client, so the consent
+// screen is shown only for scopes not granted before
+type Consent struct {
+	ID        uuid.UUID `json:"id" gorm:"type:uuid;primary_key;default:gen_random_uuid()"`
+	TenantID  uuid.UUID `json:"tenant_id" gorm:"type:uuid;not null;index"`
+	UserID    uuid.UUID `json:"user_id" gorm:"type:uuid;not null"`
+	ClientID  uuid.UUID `json:"client_id" gorm:"type:uuid;not null"`
+	Scope     string    `json:"scope" gorm:"type:text;not null;default:''"`
+	CreatedAt time.Time `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt time.Time `json:"updated_at" gorm:"autoUpdateTime"`
 }
 
 // AccessToken represents an OAuth 2.0 access token.
@@ -464,6 +510,7 @@ type OpenIDConfiguration struct {
 	RevocationEndpoint                         string   `json:"revocation_endpoint,omitempty"`
 	IntrospectionEndpoint                      string   `json:"introspection_endpoint,omitempty"`
 	DeviceAuthorizationEndpoint                string   `json:"device_authorization_endpoint,omitempty"`
+	EndSessionEndpoint                         string   `json:"end_session_endpoint,omitempty"`
 	ScopesSupported                            []string `json:"scopes_supported"`
 	ResponseTypesSupported                     []string `json:"response_types_supported"`
 	ResponseModesSupported                     []string `json:"response_modes_supported,omitempty"`
@@ -474,6 +521,7 @@ type OpenIDConfiguration struct {
 	RevocationEndpointAuthMethodsSupported     []string `json:"revocation_endpoint_auth_methods_supported,omitempty"`
 	IntrospectionEndpointAuthMethodsSupported  []string `json:"introspection_endpoint_auth_methods_supported,omitempty"`
 	CodeChallengeMethodsSupported              []string `json:"code_challenge_methods_supported,omitempty"`
+	PromptValuesSupported                      []string `json:"prompt_values_supported,omitempty"`
 	ClaimsSupported                            []string `json:"claims_supported"`
 	ClaimsParameterSupported                   bool     `json:"claims_parameter_supported"`
 	RequestParameterSupported                  bool     `json:"request_parameter_supported"`
@@ -544,20 +592,22 @@ func (c *JWTClaims) GetAudience() (jwt.ClaimStrings, error) {
 
 // CreateClientRequest represents a request to create a new client
 type CreateClientRequest struct {
-	Name         string   `json:"name" binding:"required"`
-	RedirectURIs []string `json:"redirect_uris" binding:"required"`
-	GrantTypes   []string `json:"grant_types" binding:"required"`
-	Scopes       []string `json:"scopes" binding:"required"`
-	IsPublic     bool     `json:"is_public"`
+	Name                   string   `json:"name" binding:"required"`
+	RedirectURIs           []string `json:"redirect_uris" binding:"required"`
+	PostLogoutRedirectURIs []string `json:"post_logout_redirect_uris"`
+	GrantTypes             []string `json:"grant_types" binding:"required"`
+	Scopes                 []string `json:"scopes" binding:"required"`
+	IsPublic               bool     `json:"is_public"`
 }
 
 // UpdateClientRequest represents a request to update a client
 type UpdateClientRequest struct {
-	Name         string   `json:"name"`
-	RedirectURIs []string `json:"redirect_uris"`
-	GrantTypes   []string `json:"grant_types"`
-	Scopes       []string `json:"scopes"`
-	IsPublic     *bool    `json:"is_public"`
+	Name                   string   `json:"name"`
+	RedirectURIs           []string `json:"redirect_uris"`
+	PostLogoutRedirectURIs []string `json:"post_logout_redirect_uris"`
+	GrantTypes             []string `json:"grant_types"`
+	Scopes                 []string `json:"scopes"`
+	IsPublic               *bool    `json:"is_public"`
 }
 
 // CreateUserRequest represents a request to create a new user
@@ -657,6 +707,12 @@ type AuthorizeRequest struct {
 	CodeChallenge       string `form:"code_challenge"`
 	CodeChallengeMethod string `form:"code_challenge_method"`
 	Nonce               string `form:"nonce"`
+	// Prompt is a space-delimited list of none, login, consent, select_account
+	// (OIDC Core §3.1.2.1)
+	Prompt string `form:"prompt"`
+	// MaxAge is the allowable elapsed time in seconds since the user last
+	// authenticated; empty when not requested
+	MaxAge string `form:"max_age"`
 }
 
 // TokenRequest represents an OAuth token request
