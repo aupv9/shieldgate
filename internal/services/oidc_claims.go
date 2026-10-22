@@ -20,6 +20,8 @@ const (
 // auth_time (OIDC Core §12.2).
 type authContext struct {
 	authTime *time.Time
+	// amr lists the authentication methods (RFC 8176); kept on refresh
+	amr []string
 	// nonce is echoed only in the ID token of the initial code exchange
 	nonce string
 }

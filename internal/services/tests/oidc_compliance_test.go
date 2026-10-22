@@ -62,7 +62,7 @@ func newOIDCFixture(t *testing.T) *oidcFixture {
 func (f *oidcFixture) exchange(t *testing.T, scope, nonce string, authTime time.Time) *models.TokenResponse {
 	t.Helper()
 	ctx := context.Background()
-	code, err := f.svc.GenerateAuthorizationCode(ctx, f.tenantID, f.client.ID, f.user.ID, "https://app/cb", scope, "", "", nonce, authTime)
+	code, err := f.svc.GenerateAuthorizationCode(ctx, f.tenantID, f.client.ID, f.user.ID, "https://app/cb", scope, "", "", nonce, authTime, nil)
 	require.NoError(t, err)
 	tokens, err := f.svc.ExchangeAuthorizationCode(ctx, f.tenantID, code.Code, f.client.ID.String(), "", "https://app/cb", "")
 	require.NoError(t, err)
@@ -182,7 +182,7 @@ func TestDeviceFlow_IDToken_AuthTimeIsApprovalTime(t *testing.T) {
 	auth, err := f.svc.CreateDeviceAuthorization(ctx, f.tenantID, client, "openid")
 	require.NoError(t, err)
 	before := time.Now().Unix()
-	require.NoError(t, f.svc.ApproveDeviceCode(ctx, f.tenantID, auth.UserCode, f.user.ID))
+	require.NoError(t, f.svc.ApproveDeviceCode(ctx, f.tenantID, auth.UserCode, f.user.ID, nil))
 
 	// Act
 	tokens, err := f.svc.ExchangeDeviceCode(ctx, f.tenantID, client, auth.DeviceCode)
@@ -198,7 +198,7 @@ func TestCodeExchange_OpenIDButUserMissing_FailsInsteadOfDroppingIDToken(t *test
 	// Arrange
 	f := newOIDCFixture(t)
 	ctx := context.Background()
-	code, err := f.svc.GenerateAuthorizationCode(ctx, f.tenantID, f.client.ID, uuid.New(), "https://app/cb", "openid", "", "", "", time.Now())
+	code, err := f.svc.GenerateAuthorizationCode(ctx, f.tenantID, f.client.ID, uuid.New(), "https://app/cb", "openid", "", "", "", time.Now(), nil)
 	require.NoError(t, err)
 
 	// Act

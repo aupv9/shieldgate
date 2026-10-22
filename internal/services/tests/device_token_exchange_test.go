@@ -57,7 +57,7 @@ func TestDeviceFlow_HappyPath(t *testing.T) {
 	assert.Equal(t, 5, auth.Interval)
 
 	// User approves on the verification page
-	require.NoError(t, svc.ApproveDeviceCode(ctx, tenantID, auth.UserCode, user.ID))
+	require.NoError(t, svc.ApproveDeviceCode(ctx, tenantID, auth.UserCode, user.ID, nil))
 
 	// Device polls and receives tokens
 	tokens, err := svc.ExchangeDeviceCode(ctx, tenantID, client, auth.DeviceCode)
@@ -158,13 +158,13 @@ func TestDeviceFlow_ExpiredCode(t *testing.T) {
 	assert.ErrorIs(t, err, models.ErrExpiredDeviceCode)
 
 	// Approving an expired code also fails
-	err = svc.ApproveDeviceCode(ctx, tenantID, auth.UserCode, uuid.New())
+	err = svc.ApproveDeviceCode(ctx, tenantID, auth.UserCode, uuid.New(), nil)
 	assert.Error(t, err)
 }
 
 func TestApproveDeviceCode_UnknownCode(t *testing.T) {
 	svc, _ := newAuthServiceWithFakes()
-	err := svc.ApproveDeviceCode(context.Background(), uuid.New(), "XXXX-XXXX", uuid.New())
+	err := svc.ApproveDeviceCode(context.Background(), uuid.New(), "XXXX-XXXX", uuid.New(), nil)
 	assert.ErrorIs(t, err, models.ErrDeviceCodeNotFound)
 }
 
