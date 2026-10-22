@@ -182,6 +182,14 @@
             100% { transform: rotate(360deg); }
         }
 
+        .forgot-link {
+            display: inline-block;
+            margin-top: 8px;
+            font-size: 13px;
+            color: #667eea;
+            text-decoration: none;
+        }
+
         .security-info {
             text-align: center;
             color: #666;
@@ -320,6 +328,7 @@
                 <input type="password" id="password" name="password" required 
                        placeholder="Enter your password" autocomplete="current-password">
                 <div class="error-message" id="passwordError"></div>
+                <a class="forgot-link" href="/account/forgot-password">Forgot password?</a>
             </div>
 
             <div class="loading" id="loading">

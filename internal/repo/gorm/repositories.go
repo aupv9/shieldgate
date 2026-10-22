@@ -23,5 +23,10 @@ func NewRepositories(db *gorm.DB) *repo.Repositories {
 		UserRole:       NewUserRoleRepository(db),
 		RolePermission: NewRolePermissionRepository(db),
 		AuditLog:       NewAuditLogRepository(db),
+
+		EmailTemplate:     NewEmailTemplateRepository(db),
+		EmailQueue:        NewEmailQueueRepository(db),
+		EmailVerification: NewEmailVerificationRepository(db),
+		PasswordReset:     NewPasswordResetRepository(db),
 	}
 }

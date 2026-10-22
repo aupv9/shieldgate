@@ -280,10 +280,12 @@ func extractTenantFromSubdomain(host string) (uuid.UUID, error) {
 	return uuid.Nil, fmt.Errorf("no tenant found in subdomain")
 }
 
-// isOAuthEndpoint checks if the path is an OAuth/OIDC endpoint
+// isOAuthEndpoint checks if the path is an OAuth/OIDC endpoint or browser
+// page that reports a missing tenant itself
 func isOAuthEndpoint(path string) bool {
 	oauthPaths := []string{
 		"/oauth/",       // authorize, login, consent, logout, token, device, ...
+		"/account/",     // email verification and password reset pages
 		"/.well-known/", // discovery, RFC 8414 metadata, JWKS
 		"/userinfo",
 	}

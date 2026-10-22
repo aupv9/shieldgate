@@ -221,12 +221,10 @@ type EmailService interface {
 	ProcessQueue(ctx context.Context) error
 	GetQueueStatus(ctx context.Context, tenantID uuid.UUID) (map[string]int, error)
 	RetryFailedEmails(ctx context.Context, tenantID uuid.UUID, maxAttempts int) error
+}
 
-	// Verification Emails
-	SendVerificationEmail(ctx context.Context, tenantID, userID uuid.UUID) error
-	VerifyEmail(ctx context.Context, tenantID uuid.UUID, code string) (*models.User, error)
-
-	// Password Reset Emails
-	SendPasswordResetEmail(ctx context.Context, tenantID uuid.UUID, email string) error
-	ResetPassword(ctx context.Context, tenantID uuid.UUID, token, newPassword string) (*models.User, error)
+// TemplateEmailSender queues an email rendered from a template. EmailService
+// satisfies it; UserService depends only on this for account emails.
+type TemplateEmailSender interface {
+	SendTemplateEmail(ctx context.Context, tenantID uuid.UUID, toEmail, toName, templateName string, variables map[string]string, priority int) error
 }

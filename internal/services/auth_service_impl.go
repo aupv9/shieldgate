@@ -551,6 +551,18 @@ func (s *authServiceImpl) CleanupExpiredTokens(ctx context.Context) error {
 		}
 	}
 
+	if s.repos.EmailVerification != nil {
+		if err := s.repos.EmailVerification.DeleteExpired(ctx); err != nil {
+			s.logger.WithError(err).Error("failed to cleanup expired email verifications")
+		}
+	}
+
+	if s.repos.PasswordReset != nil {
+		if err := s.repos.PasswordReset.DeleteExpired(ctx); err != nil {
+			s.logger.WithError(err).Error("failed to cleanup expired password resets")
+		}
+	}
+
 	return nil
 }
 

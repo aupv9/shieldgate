@@ -47,7 +47,7 @@ func newRevocationFixture(t *testing.T) *revocationFixture {
 
 	return &revocationFixture{
 		ctx:      ctx,
-		users:    services.NewUserService(repos, quietLogger()),
+		users:    services.NewUserService(repos, nil, "https://auth.example", quietLogger()),
 		sessions: sessions,
 		repo:     sessionRepo,
 		user:     user,
