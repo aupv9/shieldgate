@@ -42,8 +42,10 @@ type ssoFixture struct {
 	auth     *MockAuthService
 	users    *MockUserService
 	router   *gin.Engine
-	// authTimes records the auth_time passed for each issued code
+	// authTimes and amrs record what was passed for each issued code
 	authTimes []time.Time
+	amrs      [][]string
+	mfa       *fakeMFAService
 }
 
 func newSSOFixture(t *testing.T) *ssoFixture {
@@ -73,11 +75,15 @@ func newSSOFixture(t *testing.T) *ssoFixture {
 	clients.On("ValidateRedirectURI", mock.Anything, f.client, ssoRedirectURI).Return(nil)
 	clients.On("ValidateRedirectURI", mock.Anything, f.client, mock.Anything).Return(errors.New("not registered"))
 	f.auth.On("GenerateAuthorizationCode", mock.Anything, f.tenantID, f.client.ID, f.user.ID, ssoRedirectURI,
-		mock.Anything, "", "", mock.Anything, mock.AnythingOfType("time.Time")).
-		Run(func(args mock.Arguments) { f.authTimes = append(f.authTimes, args.Get(9).(time.Time)) }).
+		mock.Anything, "", "", mock.Anything, mock.AnythingOfType("time.Time"), mock.Anything).
+		Run(func(args mock.Arguments) {
+			f.authTimes = append(f.authTimes, args.Get(9).(time.Time))
+			f.amrs = append(f.amrs, args.Get(10).([]string))
+		}).
 		Return(&models.AuthorizationCode{Code: "the-code"}, nil)
 
-	handler := handlers.NewOAuthHandler(utils.CreateTestConfig(), tenants, users, clients, f.auth, f.store, logger)
+	f.mfa = &fakeMFAService{}
+	handler := handlers.NewOAuthHandler(utils.CreateTestConfig(), tenants, users, clients, f.auth, f.store, f.mfa, logger)
 	f.router = gin.New()
 	f.router.SetFuncMap(template.FuncMap{
 		"contains": func(s, substr string) bool { return strings.Contains(s, substr) },
