@@ -13,6 +13,7 @@ import (
 
 	"shieldgate/config"
 	"shieldgate/internal/models"
+	"shieldgate/internal/observability"
 	"shieldgate/internal/repo"
 
 	"github.com/google/uuid"
@@ -24,7 +25,16 @@ type EmailServiceImpl struct {
 	templateRepo repo.EmailTemplateRepository
 	queueRepo    repo.EmailQueueRepository
 	cfg          *config.Config
+	metrics      *observability.Metrics
 	logger       *logrus.Logger
+}
+
+// EmailServiceOption configures optional EmailService behavior
+type EmailServiceOption func(*EmailServiceImpl)
+
+// WithEmailMetrics counts processed emails by outcome
+func WithEmailMetrics(m *observability.Metrics) EmailServiceOption {
+	return func(s *EmailServiceImpl) { s.metrics = m }
 }
 
 // NewEmailService creates a new email service instance
@@ -33,13 +43,18 @@ func NewEmailService(
 	queueRepo repo.EmailQueueRepository,
 	cfg *config.Config,
 	logger *logrus.Logger,
+	opts ...EmailServiceOption,
 ) EmailService {
-	return &EmailServiceImpl{
+	s := &EmailServiceImpl{
 		templateRepo: templateRepo,
 		queueRepo:    queueRepo,
 		cfg:          cfg,
 		logger:       logger,
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // CreateTemplate creates a new email template
@@ -313,8 +328,10 @@ func (s *EmailServiceImpl) processEmail(ctx context.Context, email *models.Email
 			// Exponential backoff: 1, 2, 4... minutes
 			email.Status = "pending"
 			email.ScheduledAt = time.Now().Add(time.Minute << (email.Attempts - 1))
+			s.metrics.EmailProcessed("retry")
 		} else {
 			email.Status = "failed"
+			s.metrics.EmailProcessed("failed")
 		}
 		if err2 := s.queueRepo.Update(ctx, email); err2 != nil {
 			s.logger.WithError(err2).Error("failed to update email status after send failure")
@@ -323,6 +340,7 @@ func (s *EmailServiceImpl) processEmail(ctx context.Context, email *models.Email
 	}
 
 	email.Status = "sent"
+	s.metrics.EmailProcessed("sent")
 	now := time.Now()
 	email.SentAt = &now
 	// Bodies can hold live links (password reset, verification); once sent
