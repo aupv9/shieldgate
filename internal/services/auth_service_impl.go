@@ -540,6 +540,7 @@ func (s *authServiceImpl) GetDiscoveryDocument(ctx context.Context) (*models.Ope
 		RevocationEndpoint:          base + "/oauth/revoke",
 		IntrospectionEndpoint:       base + "/oauth/introspect",
 		DeviceAuthorizationEndpoint: base + "/oauth/device_authorization",
+		RegistrationEndpoint:        base + "/oauth/register",
 		EndSessionEndpoint:          base + "/oauth/logout",
 		ScopesSupported:             []string{ScopeOpenID, ScopeProfile, ScopeEmail, ScopePhone, "read", "write"},
 		ResponseTypesSupported:      []string{"code"},
