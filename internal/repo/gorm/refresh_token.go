@@ -83,3 +83,11 @@ func (r *refreshTokenRepository) DeleteByUserID(ctx context.Context, tenantID, u
 	}
 	return nil
 }
+
+func (r *refreshTokenRepository) DeleteByClientID(ctx context.Context, tenantID, clientID uuid.UUID) error {
+	if err := r.db.WithContext(ctx).
+		Delete(&models.RefreshToken{}, "tenant_id = ? AND client_id = ?", tenantID, clientID).Error; err != nil {
+		return fmt.Errorf("failed to delete refresh tokens by client ID: %w", err)
+	}
+	return nil
+}
