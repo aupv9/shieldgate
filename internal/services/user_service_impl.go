@@ -2,7 +2,11 @@ package services
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/url"
+	"strconv"
+	"strings"
 	"time"
 
 	"shieldgate/internal/models"
@@ -13,21 +17,50 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+var (
+	// ErrPasswordTooShort is returned when a new password is shorter than
+	// MinPasswordLength
+	ErrPasswordTooShort = fmt.Errorf("password must be at least %d characters", MinPasswordLength)
+
+	errAccountEmailsUnavailable = errors.New("account emails are not configured")
+)
+
 type userServiceImpl struct {
 	repos  *repo.Repositories
-	logger *logrus.Logger
+	emails TemplateEmailSender
+	// baseURL is the public server URL that email links point to
+	baseURL string
+	logger  *logrus.Logger
 }
 
 const (
 	MaxLoginAttempts = 5
 	LockoutDuration  = 30 * time.Minute
+
+	// EmailVerificationDuration is how long a verification link stays valid
+	EmailVerificationDuration = 24 * time.Hour
+	// PasswordResetDuration is how long a reset link stays valid
+	PasswordResetDuration = time.Hour
+	// MaxPasswordResetsPerHour bounds reset emails per user, so the reset
+	// form cannot be used to flood someone's inbox
+	MaxPasswordResetsPerHour = 3
+	// MinPasswordLength is the shortest password accepted on reset
+	MinPasswordLength = 8
+
+	// emailLinkTokenBytes is the entropy of verification codes and reset
+	// tokens (256 bits)
+	emailLinkTokenBytes = 32
 )
 
-// NewUserService creates a new user service implementation
-func NewUserService(repos *repo.Repositories, logger *logrus.Logger) UserService {
+// NewUserService creates a new user service implementation. emails may be
+// nil, in which case account emails (verification, password reset) are
+// unavailable; baseURL is the public URL that email links point to.
+func NewUserService(repos *repo.Repositories, emails TemplateEmailSender, baseURL string, logger *logrus.Logger) UserService {
 	return &userServiceImpl{
-		repos:  repos,
-		logger: logger,
+		repos:   repos,
+		emails:  emails,
+		baseURL: strings.TrimSuffix(baseURL, "/"),
+		logger:  logger,
 	}
 }
 
@@ -318,20 +351,248 @@ func (s *userServiceImpl) ActivateUser(ctx context.Context, tenantID, userID uui
 	return s.UpdateStatus(ctx, tenantID, userID, models.UserStatusActive)
 }
 
+// SendVerificationEmail emails the user a link proving they own their
+// address. Earlier unused links stop working.
 func (s *userServiceImpl) SendVerificationEmail(ctx context.Context, tenantID, userID uuid.UUID) error {
-	return fmt.Errorf("SendVerificationEmail not implemented in UserService; use EmailService")
+	if s.emails == nil || s.repos.EmailVerification == nil {
+		return errAccountEmailsUnavailable
+	}
+
+	user, err := s.repos.User.GetByID(ctx, tenantID, userID)
+	if err != nil {
+		return err
+	}
+	if user.EmailVerified {
+		return models.ErrEmailAlreadyVerified
+	}
+
+	code, err := randomToken(emailLinkTokenBytes)
+	if err != nil {
+		return fmt.Errorf("failed to generate verification code: %w", err)
+	}
+	if err := s.repos.EmailVerification.DeletePendingByUserID(ctx, tenantID, userID); err != nil {
+		return err
+	}
+	if err := s.repos.EmailVerification.Create(ctx, &models.EmailVerification{
+		ID:        uuid.New(),
+		TenantID:  tenantID,
+		UserID:    userID,
+		Email:     user.Email,
+		CodeHash:  hashToken(code),
+		ExpiresAt: time.Now().Add(EmailVerificationDuration),
+	}); err != nil {
+		return err
+	}
+
+	link := s.baseURL + "/account/verify-email?code=" + url.QueryEscape(code)
+	if err := s.emails.SendTemplateEmail(ctx, tenantID, user.Email, user.GetFullName(),
+		string(models.EmailTemplateEmailVerification), map[string]string{
+			"user_name":         displayName(user),
+			"verification_link": link,
+			"expires_hours":     strconv.Itoa(int(EmailVerificationDuration.Hours())),
+		}, 1); err != nil {
+		return fmt.Errorf("failed to send verification email: %w", err)
+	}
+
+	s.logger.WithFields(logrus.Fields{
+		"tenant_id": tenantID,
+		"user_id":   userID,
+	}).Info("verification email sent")
+	return nil
 }
 
+// VerifyEmail consumes a verification code and marks the address verified.
+// A pending account becomes active.
 func (s *userServiceImpl) VerifyEmail(ctx context.Context, tenantID uuid.UUID, code string) (*models.User, error) {
-	return nil, fmt.Errorf("VerifyEmail not implemented in UserService; use EmailService")
+	if s.repos.EmailVerification == nil {
+		return nil, errAccountEmailsUnavailable
+	}
+	if code == "" {
+		return nil, models.ErrInvalidVerificationCode
+	}
+
+	verification, err := s.repos.EmailVerification.GetByCodeHash(ctx, tenantID, hashToken(code))
+	if err != nil {
+		return nil, err
+	}
+	if verification.VerifiedAt != nil {
+		return nil, models.ErrInvalidVerificationCode
+	}
+	if verification.IsExpired() {
+		return nil, models.ErrVerificationExpired
+	}
+
+	user, err := s.repos.User.GetByID(ctx, tenantID, verification.UserID)
+	if err != nil {
+		return nil, err
+	}
+	// The link proves ownership of the address it was sent to, not of an
+	// address the user switched to afterwards
+	if !strings.EqualFold(user.Email, verification.Email) {
+		return nil, models.ErrInvalidVerificationCode
+	}
+
+	claimed, err := s.repos.EmailVerification.MarkVerified(ctx, verification.ID)
+	if err != nil {
+		return nil, err
+	}
+	if !claimed {
+		return nil, models.ErrInvalidVerificationCode
+	}
+
+	user.EmailVerified = true
+	if user.Status == models.UserStatusPending {
+		user.Status = models.UserStatusActive
+	}
+	user.UpdatedAt = time.Now()
+	if err := s.repos.User.Update(ctx, user); err != nil {
+		return nil, fmt.Errorf("failed to update user: %w", err)
+	}
+
+	s.logger.WithFields(logrus.Fields{
+		"tenant_id": tenantID,
+		"user_id":   user.ID,
+	}).Info("email verified")
+	return user, nil
 }
 
+// RequestPasswordReset emails a single-use reset link. It returns nil for
+// unknown or suspended accounts so callers cannot probe which emails exist.
 func (s *userServiceImpl) RequestPasswordReset(ctx context.Context, tenantID uuid.UUID, email string) error {
-	return fmt.Errorf("RequestPasswordReset not implemented in UserService; use EmailService")
+	if s.emails == nil || s.repos.PasswordReset == nil {
+		return errAccountEmailsUnavailable
+	}
+
+	user, err := s.repos.User.GetByEmail(ctx, tenantID, email)
+	if errors.Is(err, models.ErrUserNotFound) {
+		s.logger.WithField("tenant_id", tenantID).Info("password reset requested for unknown email")
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	logger := s.logger.WithFields(logrus.Fields{"tenant_id": tenantID, "user_id": user.ID})
+	if user.IsSuspended() {
+		logger.Warn("password reset requested for suspended user")
+		return nil
+	}
+
+	recent, err := s.repos.PasswordReset.CountSince(ctx, tenantID, user.ID, time.Now().Add(-time.Hour))
+	if err != nil {
+		return err
+	}
+	if recent >= MaxPasswordResetsPerHour {
+		logger.Warn("password reset rate limit reached")
+		return nil
+	}
+
+	token, err := randomToken(emailLinkTokenBytes)
+	if err != nil {
+		return fmt.Errorf("failed to generate reset token: %w", err)
+	}
+	// Only the newest link works
+	if err := s.repos.PasswordReset.RevokeUnusedByUserID(ctx, tenantID, user.ID); err != nil {
+		return err
+	}
+	if err := s.repos.PasswordReset.Create(ctx, &models.PasswordReset{
+		ID:        uuid.New(),
+		TenantID:  tenantID,
+		UserID:    user.ID,
+		TokenHash: hashToken(token),
+		ExpiresAt: time.Now().Add(PasswordResetDuration),
+	}); err != nil {
+		return err
+	}
+
+	link := s.baseURL + "/account/reset-password?token=" + url.QueryEscape(token)
+	if err := s.emails.SendTemplateEmail(ctx, tenantID, user.Email, user.GetFullName(),
+		string(models.EmailTemplatePasswordReset), map[string]string{
+			"user_name":       displayName(user),
+			"reset_link":      link,
+			"expires_minutes": strconv.Itoa(int(PasswordResetDuration.Minutes())),
+		}, 1); err != nil {
+		return fmt.Errorf("failed to send password reset email: %w", err)
+	}
+
+	logger.Info("password reset email sent")
+	return nil
 }
 
+// ResetPassword consumes a reset token and sets a new password. Because a
+// reset usually means the old password is lost or compromised, it also ends
+// every session and revokes every token issued to the user, and lifts a
+// lockout caused by failed logins.
 func (s *userServiceImpl) ResetPassword(ctx context.Context, tenantID uuid.UUID, token, newPassword string) (*models.User, error) {
-	return nil, fmt.Errorf("ResetPassword not implemented in UserService; use EmailService")
+	if s.repos.PasswordReset == nil {
+		return nil, errAccountEmailsUnavailable
+	}
+	if len(newPassword) < MinPasswordLength {
+		return nil, ErrPasswordTooShort
+	}
+	if token == "" {
+		return nil, models.ErrInvalidVerificationCode
+	}
+
+	reset, err := s.repos.PasswordReset.GetByTokenHash(ctx, tenantID, hashToken(token))
+	if err != nil {
+		return nil, err
+	}
+	if reset.IsUsed() {
+		return nil, models.ErrInvalidVerificationCode
+	}
+	if reset.IsExpired() {
+		return nil, models.ErrVerificationExpired
+	}
+
+	user, err := s.repos.User.GetByID(ctx, tenantID, reset.UserID)
+	if err != nil {
+		return nil, err
+	}
+	if user.IsSuspended() {
+		return nil, models.ErrUserSuspended
+	}
+
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
+	if err != nil {
+		return nil, fmt.Errorf("failed to hash password: %w", err)
+	}
+
+	claimed, err := s.repos.PasswordReset.MarkUsed(ctx, reset.ID)
+	if err != nil {
+		return nil, err
+	}
+	if !claimed {
+		return nil, models.ErrInvalidVerificationCode
+	}
+
+	now := time.Now()
+	user.PasswordHash = string(hashedPassword)
+	user.FailedLoginAttempts = 0
+	// Lift a failed-login lockout (it has an end time); an administrator's
+	// lock has none and stays
+	if user.Status == models.UserStatusLocked && user.LockedUntil != nil {
+		user.Status = models.UserStatusActive
+		user.LockedAt = nil
+		user.LockedUntil = nil
+	}
+	user.UpdatedAt = now
+	if err := s.repos.User.Update(ctx, user); err != nil {
+		return nil, fmt.Errorf("failed to update user password: %w", err)
+	}
+
+	if err := s.revokeUserCredentials(ctx, tenantID, user.ID); err != nil {
+		return nil, err
+	}
+	if err := s.repos.PasswordReset.RevokeUnusedByUserID(ctx, tenantID, user.ID); err != nil {
+		s.logger.WithError(err).Error("failed to revoke other password reset tokens")
+	}
+	s.notifyPasswordChanged(ctx, user)
+
+	s.logger.WithFields(logrus.Fields{
+		"tenant_id": tenantID,
+		"user_id":   user.ID,
+	}).Info("password reset")
+	return user, nil
 }
 
 func (s *userServiceImpl) RecordLoginAttempt(ctx context.Context, tenantID uuid.UUID, email, ipAddress string, success bool) error {
@@ -409,6 +670,7 @@ func (s *userServiceImpl) ChangePassword(ctx context.Context, tenantID, userID u
 	if err := s.endSessions(ctx, tenantID, userID); err != nil {
 		return err
 	}
+	s.notifyPasswordChanged(ctx, user)
 
 	s.logger.WithFields(logrus.Fields{
 		"tenant_id": tenantID,
@@ -433,4 +695,50 @@ func (s *userServiceImpl) endSessions(ctx context.Context, tenantID, userID uuid
 		return fmt.Errorf("failed to end user sessions: %w", err)
 	}
 	return nil
+}
+
+// revokeUserCredentials ends the user's sessions and revokes their access and
+// refresh tokens
+func (s *userServiceImpl) revokeUserCredentials(ctx context.Context, tenantID, userID uuid.UUID) error {
+	if err := s.endSessions(ctx, tenantID, userID); err != nil {
+		return err
+	}
+	if s.repos.AccessToken != nil {
+		if err := s.repos.AccessToken.DeleteByUserID(ctx, tenantID, userID); err != nil {
+			return fmt.Errorf("failed to revoke access tokens: %w", err)
+		}
+	}
+	if s.repos.RefreshToken != nil {
+		if err := s.repos.RefreshToken.DeleteByUserID(ctx, tenantID, userID); err != nil {
+			return fmt.Errorf("failed to revoke refresh tokens: %w", err)
+		}
+	}
+	return nil
+}
+
+// notifyPasswordChanged tells the user their password changed, so an
+// unexpected change is noticed. Failure is logged, not returned: the
+// password has already changed.
+func (s *userServiceImpl) notifyPasswordChanged(ctx context.Context, user *models.User) {
+	if s.emails == nil {
+		return
+	}
+	if err := s.emails.SendTemplateEmail(ctx, user.TenantID, user.Email, user.GetFullName(),
+		string(models.EmailTemplatePasswordChanged), map[string]string{"user_name": displayName(user)}, 1); err != nil {
+		s.logger.WithError(err).WithFields(logrus.Fields{
+			"tenant_id": user.TenantID,
+			"user_id":   user.ID,
+		}).Error("failed to send password changed email")
+	}
+}
+
+// displayName is how emails greet the user
+func displayName(user *models.User) string {
+	if name := user.GetFullName(); name != "" {
+		return name
+	}
+	if user.Username != "" {
+		return user.Username
+	}
+	return user.Email
 }

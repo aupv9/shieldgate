@@ -15,6 +15,7 @@ import (
 // Custom error types for business logic
 var (
 	ErrResourceNotFound        = errors.New("resource not found")
+	ErrResourceConflict        = errors.New("resource conflict")
 	ErrDuplicateResource       = errors.New("duplicate resource")
 	ErrBusinessRuleViolation   = errors.New("business rule violation")
 	ErrTenantNotFound          = errors.New("tenant not found")
@@ -45,6 +46,12 @@ var (
 	ErrEmailNotVerified        = errors.New("email not verified")
 	ErrInvalidVerificationCode = errors.New("invalid verification code")
 	ErrVerificationExpired     = errors.New("verification code expired")
+	ErrEmailAlreadyVerified    = errors.New("email already verified")
+	ErrMFANotEnabled           = errors.New("multi-factor authentication is not enabled")
+	ErrMFAAlreadyEnabled       = errors.New("multi-factor authentication is already enabled")
+	ErrMFANotEnrolling         = errors.New("no pending multi-factor enrollment")
+	ErrInvalidMFACode          = errors.New("invalid verification code")
+	ErrMFALocked               = errors.New("too many failed verification attempts")
 	ErrPKCEVerificationFailed  = errors.New("pkce verification failed")
 	ErrAuthCodeAlreadyUsed     = errors.New("authorization code already used")
 	ErrUnauthorizedClient      = errors.New("client is not authorized for this grant type")
@@ -120,6 +127,18 @@ const (
 	AuditActionRoleRevoked       AuditAction = "role.revoked"
 	AuditActionPermissionGranted AuditAction = "permission.granted"
 	AuditActionPermissionRevoked AuditAction = "permission.revoked"
+
+	AuditActionTokenReuseDetected     AuditAction = "token.reuse_detected"
+	AuditActionMFAEnabled             AuditAction = "user.mfa.enabled"
+	AuditActionMFADisabled            AuditAction = "user.mfa.disabled"
+	AuditActionMFAReset               AuditAction = "user.mfa.reset"
+	AuditActionMFAFailed              AuditAction = "user.mfa.failed"
+	AuditActionConsentGranted         AuditAction = "user.consent.granted"
+	AuditActionConsentDenied          AuditAction = "user.consent.denied"
+	AuditActionDeviceApproved         AuditAction = "device.approved"
+	AuditActionDeviceDenied           AuditAction = "device.denied"
+	AuditActionPasswordResetRequested AuditAction = "user.password.reset_requested"
+	AuditActionPasswordReset          AuditAction = "user.password.reset"
 )
 
 // Email template types (identifier strings stored/referenced by templates)
@@ -253,9 +272,11 @@ type AuthorizationCode struct {
 	CodeChallengeMethod string     `json:"code_challenge_method" gorm:"size:50"`
 	Nonce               string     `json:"-" gorm:"type:text"`
 	AuthTime            *time.Time `json:"auth_time"`
-	UsedAt              *time.Time `json:"used_at"`
-	ExpiresAt           time.Time  `json:"expires_at" gorm:"not null;index"`
-	CreatedAt           time.Time  `json:"created_at" gorm:"autoCreateTime"`
+	// AMR lists the authentication methods behind the code (RFC 8176)
+	AMR       StringArray `json:"amr" gorm:"type:jsonb"`
+	UsedAt    *time.Time  `json:"used_at"`
+	ExpiresAt time.Time   `json:"expires_at" gorm:"not null;index"`
+	CreatedAt time.Time   `json:"created_at" gorm:"autoCreateTime"`
 }
 
 // Session is a user's single sign-on session at the authorization server.
@@ -266,11 +287,13 @@ type Session struct {
 	UserID    uuid.UUID `json:"user_id" gorm:"type:uuid;not null;index"`
 	TokenHash string    `json:"-" gorm:"not null;size:255;uniqueIndex"`
 	// AuthTime is when the user last authenticated with credentials
-	AuthTime  time.Time `json:"auth_time" gorm:"not null"`
-	IPAddress string    `json:"ip_address" gorm:"size:45"`
-	UserAgent string    `json:"user_agent" gorm:"type:text"`
-	ExpiresAt time.Time `json:"expires_at" gorm:"not null;index"`
-	CreatedAt time.Time `json:"created_at" gorm:"autoCreateTime"`
+	AuthTime time.Time `json:"auth_time" gorm:"not null"`
+	// AMR lists the authentication methods used (RFC 8176), e.g. pwd, otp
+	AMR       StringArray `json:"amr" gorm:"type:jsonb;not null;default:'[]'"`
+	IPAddress string      `json:"ip_address" gorm:"size:45"`
+	UserAgent string      `json:"user_agent" gorm:"type:text"`
+	ExpiresAt time.Time   `json:"expires_at" gorm:"not null;index"`
+	CreatedAt time.Time   `json:"created_at" gorm:"autoCreateTime"`
 }
 
 // IsExpired reports whether the session has passed its absolute lifetime
@@ -310,17 +333,18 @@ type AccessToken struct {
 // Token stores a SHA-256 hash. Rotated tokens are kept with RevokedAt set so
 // a replay of an already-rotated token can be detected and the whole family revoked.
 type RefreshToken struct {
-	ID        uuid.UUID  `json:"id" gorm:"type:uuid;primary_key;default:gen_random_uuid()"`
-	TenantID  uuid.UUID  `json:"tenant_id" gorm:"type:uuid;not null;index"`
-	Token     string     `json:"-" gorm:"not null;size:255;uniqueIndex"`
-	ClientID  uuid.UUID  `json:"client_id" gorm:"type:uuid;not null;index"`
-	UserID    uuid.UUID  `json:"user_id" gorm:"type:uuid;not null;index"`
-	FamilyID  uuid.UUID  `json:"family_id" gorm:"type:uuid;index"`
-	Scope     string     `json:"scope" gorm:"type:text"`
-	AuthTime  *time.Time `json:"auth_time"`
-	RevokedAt *time.Time `json:"revoked_at"`
-	ExpiresAt time.Time  `json:"expires_at" gorm:"not null;index"`
-	CreatedAt time.Time  `json:"created_at" gorm:"autoCreateTime"`
+	ID        uuid.UUID   `json:"id" gorm:"type:uuid;primary_key;default:gen_random_uuid()"`
+	TenantID  uuid.UUID   `json:"tenant_id" gorm:"type:uuid;not null;index"`
+	Token     string      `json:"-" gorm:"not null;size:255;uniqueIndex"`
+	ClientID  uuid.UUID   `json:"client_id" gorm:"type:uuid;not null;index"`
+	UserID    uuid.UUID   `json:"user_id" gorm:"type:uuid;not null;index"`
+	FamilyID  uuid.UUID   `json:"family_id" gorm:"type:uuid;index"`
+	Scope     string      `json:"scope" gorm:"type:text"`
+	AuthTime  *time.Time  `json:"auth_time"`
+	AMR       StringArray `json:"amr" gorm:"type:jsonb"`
+	RevokedAt *time.Time  `json:"revoked_at"`
+	ExpiresAt time.Time   `json:"expires_at" gorm:"not null;index"`
+	CreatedAt time.Time   `json:"created_at" gorm:"autoCreateTime"`
 }
 
 // IsRevoked reports whether the refresh token has been rotated or revoked
@@ -352,6 +376,7 @@ type DeviceCode struct {
 	Interval     int              `json:"interval" gorm:"not null;default:5"`
 	LastPolledAt *time.Time       `json:"last_polled_at"`
 	AuthTime     *time.Time       `json:"auth_time"`
+	AMR          StringArray      `json:"amr" gorm:"type:jsonb"`
 	ExpiresAt    time.Time        `json:"expires_at" gorm:"not null;index"`
 	CreatedAt    time.Time        `json:"created_at" gorm:"autoCreateTime"`
 }
@@ -377,10 +402,13 @@ const (
 	TokenTypeAccessToken = "urn:ietf:params:oauth:token-type:access_token"
 )
 
-// Grant type URN identifiers
+// Grant type identifiers (RFC 6749 §4, RFC 8628, RFC 8693)
 const (
-	GrantTypeDeviceCode    = "urn:ietf:params:oauth:grant-type:device_code"
-	GrantTypeTokenExchange = "urn:ietf:params:oauth:grant-type:token-exchange"
+	GrantTypeAuthorizationCode = "authorization_code"
+	GrantTypeRefreshToken      = "refresh_token"
+	GrantTypeClientCredentials = "client_credentials"
+	GrantTypeDeviceCode        = "urn:ietf:params:oauth:grant-type:device_code"
+	GrantTypeTokenExchange     = "urn:ietf:params:oauth:grant-type:token-exchange"
 )
 
 // TokenExchangeResponse is the response of a token exchange (RFC 8693 §2.2.1)
@@ -452,6 +480,8 @@ type IDTokenParams struct {
 	Nonce string
 	// AuthTime is when the user authenticated; nil omits auth_time
 	AuthTime *time.Time
+	// AMR lists the authentication methods used; empty omits amr
+	AMR []string
 	// AccessToken issued alongside, for at_hash; empty omits at_hash
 	AccessToken string
 }
@@ -460,14 +490,15 @@ type IDTokenParams struct {
 // The embedded UserInfo carries sub plus any scope-granted user claims.
 type IDTokenClaims struct {
 	UserInfo
-	Iss      string `json:"iss"`
-	Aud      string `json:"aud"`
-	Exp      int64  `json:"exp"`
-	Iat      int64  `json:"iat"`
-	AuthTime int64  `json:"auth_time,omitempty"`
-	Nonce    string `json:"nonce,omitempty"`
-	AtHash   string `json:"at_hash,omitempty"`
-	TenantID string `json:"tenant_id"`
+	Iss      string   `json:"iss"`
+	Aud      string   `json:"aud"`
+	Exp      int64    `json:"exp"`
+	Iat      int64    `json:"iat"`
+	AuthTime int64    `json:"auth_time,omitempty"`
+	AMR      []string `json:"amr,omitempty"`
+	Nonce    string   `json:"nonce,omitempty"`
+	AtHash   string   `json:"at_hash,omitempty"`
+	TenantID string   `json:"tenant_id"`
 }
 
 // GetExpirationTime implements jwt.Claims interface
@@ -978,33 +1009,157 @@ type EmailQueue struct {
 	User *User `json:"user,omitempty" gorm:"foreignKey:UserID"`
 }
 
-// EmailVerification represents an email verification record
+// UserMFA is a user's TOTP authenticator. TOTPSecret is sealed with
+// AES-GCM (see package mfa); the authenticator counts as enabled only once
+// ConfirmedAt is set. LastUsedStep rejects replay of an accepted code, and
+// FailedAttempts/LockedUntil throttle guessing independently of password
+// failures (a correct password must not reset the second-factor counter).
+type UserMFA struct {
+	UserID         uuid.UUID  `json:"user_id" gorm:"type:uuid;primary_key"`
+	TenantID       uuid.UUID  `json:"tenant_id" gorm:"type:uuid;not null"`
+	TOTPSecret     string     `json:"-" gorm:"column:totp_secret;not null"`
+	ConfirmedAt    *time.Time `json:"confirmed_at"`
+	LastUsedStep   int64      `json:"-" gorm:"not null;default:0"`
+	FailedAttempts int        `json:"-" gorm:"not null;default:0"`
+	LockedUntil    *time.Time `json:"-"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+}
+
+// TableName keeps the table name used by the migrations
+func (UserMFA) TableName() string {
+	return "user_mfa"
+}
+
+// Enabled reports whether enrollment was confirmed
+func (m *UserMFA) Enabled() bool {
+	return m.ConfirmedAt != nil
+}
+
+// MFARecoveryCode is a single-use backup code; only a keyed hash is stored
+type MFARecoveryCode struct {
+	ID        uuid.UUID  `json:"id" gorm:"type:uuid;primary_key"`
+	TenantID  uuid.UUID  `json:"tenant_id" gorm:"type:uuid;not null"`
+	UserID    uuid.UUID  `json:"user_id" gorm:"type:uuid;not null"`
+	CodeHash  string     `json:"-" gorm:"not null;size:64"`
+	UsedAt    *time.Time `json:"used_at"`
+	CreatedAt time.Time  `json:"created_at"`
+}
+
+// MFA methods a user verified the second factor with
+const (
+	MFAMethodTOTP         = "totp"
+	MFAMethodRecoveryCode = "recovery_code"
+)
+
+// MFAStatus describes a user's second factors
+type MFAStatus struct {
+	Enabled                bool       `json:"enabled"`
+	Methods                []string   `json:"methods"`
+	EnabledAt              *time.Time `json:"enabled_at,omitempty"`
+	RecoveryCodesRemaining int        `json:"recovery_codes_remaining"`
+}
+
+// TOTPEnrollment is returned when enrollment starts; the secret is shown
+// once, for the user to add to an authenticator app
+type TOTPEnrollment struct {
+	Secret     string `json:"secret"`
+	OTPAuthURI string `json:"otpauth_uri"`
+}
+
+// MFARecoveryCodes are returned once, when issued
+type MFARecoveryCodes struct {
+	RecoveryCodes []string `json:"recovery_codes"`
+}
+
+// MFACodeRequest carries a TOTP or recovery code
+type MFACodeRequest struct {
+	Code string `json:"code" binding:"required"`
+}
+
+// Token events reported by the auth service
+const (
+	TokenEventIssued        = "issued"
+	TokenEventRevoked       = "revoked"
+	TokenEventReuseDetected = "reuse_detected"
+)
+
+// Single-use credentials whose replay is detected
+const (
+	CredentialAuthorizationCode = "authorization_code"
+	CredentialRefreshToken      = "refresh_token"
+)
+
+// TokenEvent describes a change to issued tokens, for metrics and the
+// audit log. It never carries token values.
+type TokenEvent struct {
+	Type     string
+	TenantID uuid.UUID
+	ClientID uuid.UUID
+	// UserID is nil for tokens issued to a client itself
+	UserID *uuid.UUID
+	// GrantType is set for issued tokens
+	GrantType string
+	Scope     string
+	// FamilyID groups the tokens of one grant; uuid.Nil when not applicable
+	FamilyID uuid.UUID
+	// Credential is the replayed credential for TokenEventReuseDetected
+	Credential string
+	// Actor is the client acting for the subject in a token exchange
+	Actor string
+}
+
+// IdempotencyKey records a management API POST made with an
+// Idempotency-Key header, so a retry replays the stored response instead of
+// repeating the side effect. StatusCode is 0 while the request is running.
+type IdempotencyKey struct {
+	ID                  uuid.UUID `json:"id" gorm:"type:uuid;primary_key"`
+	TenantID            uuid.UUID `json:"tenant_id" gorm:"type:uuid;not null"`
+	Principal           string    `json:"principal" gorm:"not null;size:255"`
+	Key                 string    `json:"key" gorm:"column:idem_key;not null;size:255"`
+	Method              string    `json:"method" gorm:"not null;size:10"`
+	Path                string    `json:"path" gorm:"not null;size:2048"`
+	RequestHash         string    `json:"-" gorm:"not null;size:64"`
+	StatusCode          int       `json:"status_code" gorm:"not null;default:0"`
+	ResponseContentType string    `json:"-" gorm:"size:255"`
+	ResponseBody        []byte    `json:"-" gorm:"type:bytea"`
+	CreatedAt           time.Time `json:"created_at"`
+	ExpiresAt           time.Time `json:"expires_at" gorm:"not null"`
+}
+
+// InProgress reports whether the original request has not finished yet
+func (k *IdempotencyKey) InProgress() bool {
+	return k.StatusCode == 0
+}
+
+// TableName keeps the singular table name used by the migrations
+func (EmailQueue) TableName() string {
+	return "email_queue"
+}
+
+// EmailVerification is a pending email-ownership check. The link sent to
+// the user carries a random code; only its SHA-256 hash is stored.
 type EmailVerification struct {
 	ID         uuid.UUID  `json:"id" gorm:"type:uuid;primary_key;default:gen_random_uuid()"`
 	TenantID   uuid.UUID  `json:"tenant_id" gorm:"type:uuid;not null;index"`
-	UserID     uuid.UUID  `json:"user_id" gorm:"type:uuid;not null;index:idx_email_verifications_user_id"`
-	Email      string     `json:"email" gorm:"not null;size:255;index"`
-	Code       string     `json:"code" gorm:"not null;size:255;uniqueIndex"`
-	ExpiresAt  time.Time  `json:"expires_at" gorm:"not null;index"`
+	UserID     uuid.UUID  `json:"user_id" gorm:"type:uuid;not null;index"`
+	Email      string     `json:"email" gorm:"not null;size:255"`
+	CodeHash   string     `json:"-" gorm:"size:255;uniqueIndex"`
+	ExpiresAt  time.Time  `json:"expires_at" gorm:"not null"`
 	VerifiedAt *time.Time `json:"verified_at"`
 	CreatedAt  time.Time  `json:"created_at" gorm:"autoCreateTime"`
-
-	// Relationships
-	User User `json:"user,omitempty" gorm:"foreignKey:UserID"`
 }
 
-// PasswordReset represents a password reset request
+// PasswordReset is a single-use password reset grant. The link sent to the
+// user carries a random token; only its SHA-256 hash is stored.
 type PasswordReset struct {
 	ID        uuid.UUID  `json:"id" gorm:"type:uuid;primary_key;default:gen_random_uuid()"`
 	TenantID  uuid.UUID  `json:"tenant_id" gorm:"type:uuid;not null;index"`
-	UserID    uuid.UUID  `json:"user_id" gorm:"type:uuid;not null;index:idx_password_resets_user_id"`
-	Token     string     `json:"token" gorm:"not null;size:255;uniqueIndex"`
-	ExpiresAt time.Time  `json:"expires_at" gorm:"not null;index"`
+	UserID    uuid.UUID  `json:"user_id" gorm:"type:uuid;not null;index"`
+	TokenHash string     `json:"-" gorm:"size:255;uniqueIndex"`
+	ExpiresAt time.Time  `json:"expires_at" gorm:"not null"`
 	UsedAt    *time.Time `json:"used_at"`
 	CreatedAt time.Time  `json:"created_at" gorm:"autoCreateTime"`
-
-	// Relationships
-	User User `json:"user,omitempty" gorm:"foreignKey:UserID"`
 }
 
 // Request/Response Models for new features
@@ -1093,12 +1248,12 @@ type AuditLogQuery struct {
 
 // IsExpired checks if the email verification is expired
 func (ev *EmailVerification) IsExpired() bool {
-	return time.Now().After(ev.ExpiresAt)
+	return !time.Now().Before(ev.ExpiresAt)
 }
 
 // IsExpired checks if the password reset is expired
 func (pr *PasswordReset) IsExpired() bool {
-	return time.Now().After(pr.ExpiresAt)
+	return !time.Now().Before(pr.ExpiresAt)
 }
 
 // IsUsed checks if the password reset has been used

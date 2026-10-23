@@ -324,6 +324,151 @@ func Migrate(db *gorm.DB) error {
 
 		// RP-initiated logout redirect allow-list
 		`ALTER TABLE clients ADD COLUMN IF NOT EXISTS post_logout_redirect_uris JSONB NOT NULL DEFAULT '[]'`,
+
+		// User account state used by models.User; previously only in the
+		// manual migrations/001_priority_1_features.sql, so fresh databases
+		// could not insert users
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'pending'`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT FALSE`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verification_code VARCHAR(255)`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verification_expires_at TIMESTAMP WITH TIME ZONE`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_number VARCHAR(50)`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_verified BOOLEAN NOT NULL DEFAULT FALSE`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name VARCHAR(255)`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_name VARCHAR(255)`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar VARCHAR(500)`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS locale VARCHAR(10) DEFAULT 'en'`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS timezone VARCHAR(50) DEFAULT 'UTC'`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMP WITH TIME ZONE`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_ip VARCHAR(45)`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS failed_login_attempts INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_at TIMESTAMP WITH TIME ZONE`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMP WITH TIME ZONE`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_reset_token VARCHAR(255)`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_reset_expires_at TIMESTAMP WITH TIME ZONE`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'`,
+		`CREATE INDEX IF NOT EXISTS idx_users_status ON users(status)`,
+
+		// Email system
+		`CREATE TABLE IF NOT EXISTS email_templates (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL,
+			name VARCHAR(255) NOT NULL,
+			subject VARCHAR(500) NOT NULL,
+			body_html TEXT,
+			body_text TEXT,
+			variables JSONB DEFAULT '[]',
+			is_active BOOLEAN NOT NULL DEFAULT TRUE,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+			updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+			deleted_at TIMESTAMP WITH TIME ZONE
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_email_templates_tenant_name ON email_templates(tenant_id, name) WHERE deleted_at IS NULL`,
+
+		`CREATE TABLE IF NOT EXISTS email_queue (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL,
+			user_id UUID,
+			to_email VARCHAR(255) NOT NULL,
+			to_name VARCHAR(255),
+			from_email VARCHAR(255) NOT NULL,
+			from_name VARCHAR(255),
+			subject VARCHAR(500) NOT NULL,
+			body_html TEXT,
+			body_text TEXT,
+			status VARCHAR(50) NOT NULL DEFAULT 'pending',
+			priority INTEGER NOT NULL DEFAULT 5,
+			attempts INTEGER NOT NULL DEFAULT 0,
+			max_attempts INTEGER NOT NULL DEFAULT 3,
+			last_error TEXT,
+			scheduled_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+			sent_at TIMESTAMP WITH TIME ZONE,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+			updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_email_queue_status_scheduled ON email_queue(status, scheduled_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_email_queue_tenant_id ON email_queue(tenant_id)`,
+
+		// Verification codes and reset tokens: only the SHA-256 hash is
+		// stored. Rows from the old plaintext layout are discarded.
+		`CREATE TABLE IF NOT EXISTS email_verifications (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL,
+			user_id UUID NOT NULL,
+			email VARCHAR(255) NOT NULL,
+			code_hash VARCHAR(255),
+			expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+			verified_at TIMESTAMP WITH TIME ZONE,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+		)`,
+		`ALTER TABLE email_verifications ADD COLUMN IF NOT EXISTS code_hash VARCHAR(255)`,
+		`ALTER TABLE email_verifications DROP COLUMN IF EXISTS code`,
+		`DELETE FROM email_verifications WHERE code_hash IS NULL`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_email_verifications_code_hash ON email_verifications(code_hash)`,
+		`CREATE INDEX IF NOT EXISTS idx_email_verifications_tenant_user ON email_verifications(tenant_id, user_id)`,
+
+		`CREATE TABLE IF NOT EXISTS password_resets (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			tenant_id UUID NOT NULL,
+			user_id UUID NOT NULL,
+			token_hash VARCHAR(255),
+			expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+			used_at TIMESTAMP WITH TIME ZONE,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+		)`,
+		`ALTER TABLE password_resets ADD COLUMN IF NOT EXISTS token_hash VARCHAR(255)`,
+		`ALTER TABLE password_resets DROP COLUMN IF EXISTS token`,
+		`DELETE FROM password_resets WHERE token_hash IS NULL`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_password_resets_token_hash ON password_resets(token_hash)`,
+		`CREATE INDEX IF NOT EXISTS idx_password_resets_tenant_user ON password_resets(tenant_id, user_id, created_at)`,
+
+		// Idempotency-Key records for management API POSTs
+		`CREATE TABLE IF NOT EXISTS idempotency_keys (
+			id UUID PRIMARY KEY,
+			tenant_id UUID NOT NULL,
+			principal VARCHAR(255) NOT NULL,
+			idem_key VARCHAR(255) NOT NULL,
+			method VARCHAR(10) NOT NULL,
+			path VARCHAR(2048) NOT NULL,
+			request_hash VARCHAR(64) NOT NULL,
+			status_code INTEGER NOT NULL DEFAULT 0,
+			response_content_type VARCHAR(255),
+			response_body BYTEA,
+			created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+			expires_at TIMESTAMP WITH TIME ZONE NOT NULL
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_idempotency_keys_scope ON idempotency_keys(tenant_id, principal, idem_key)`,
+		`CREATE INDEX IF NOT EXISTS idx_idempotency_keys_expires_at ON idempotency_keys(expires_at)`,
+
+		// MFA: TOTP authenticators (secret sealed with AES-GCM) and
+		// recovery codes (keyed hash only)
+		`CREATE TABLE IF NOT EXISTS user_mfa (
+			user_id UUID PRIMARY KEY,
+			tenant_id UUID NOT NULL,
+			totp_secret TEXT NOT NULL,
+			confirmed_at TIMESTAMP WITH TIME ZONE,
+			last_used_step BIGINT NOT NULL DEFAULT 0,
+			failed_attempts INTEGER NOT NULL DEFAULT 0,
+			locked_until TIMESTAMP WITH TIME ZONE,
+			created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_mfa_tenant ON user_mfa(tenant_id)`,
+		`CREATE TABLE IF NOT EXISTS mfa_recovery_codes (
+			id UUID PRIMARY KEY,
+			tenant_id UUID NOT NULL,
+			user_id UUID NOT NULL,
+			code_hash VARCHAR(64) NOT NULL,
+			used_at TIMESTAMP WITH TIME ZONE,
+			created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mfa_recovery_codes_user_hash ON mfa_recovery_codes(tenant_id, user_id, code_hash)`,
+
+		// amr (RFC 8176) travels with auth_time from login to the ID token
+		`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS amr JSONB NOT NULL DEFAULT '[]'`,
+		`ALTER TABLE authorization_codes ADD COLUMN IF NOT EXISTS amr JSONB`,
+		`ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS amr JSONB`,
+		`ALTER TABLE device_codes ADD COLUMN IF NOT EXISTS amr JSONB`,
 	}
 
 	// Execute each migration
