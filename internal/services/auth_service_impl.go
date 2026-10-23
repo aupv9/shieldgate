@@ -23,18 +23,47 @@ type authServiceImpl struct {
 	repos  *repo.Repositories
 	config *config.Config
 	keys   *jwtkeys.KeySet
+	events TokenEventSink
 	logger *logrus.Logger
+}
+
+// AuthServiceOption configures optional AuthService behavior
+type AuthServiceOption func(*authServiceImpl)
+
+// WithTokenEvents reports token issuance, revocation and replay detection
+// to sink (metrics and the audit log)
+func WithTokenEvents(sink TokenEventSink) AuthServiceOption {
+	return func(s *authServiceImpl) { s.events = sink }
 }
 
 // NewAuthService creates a new auth service implementation. keys signs every
 // issued JWT and verifies presented ones.
-func NewAuthService(repos *repo.Repositories, config *config.Config, keys *jwtkeys.KeySet, logger *logrus.Logger) AuthService {
-	return &authServiceImpl{
+func NewAuthService(repos *repo.Repositories, config *config.Config, keys *jwtkeys.KeySet, logger *logrus.Logger, opts ...AuthServiceOption) AuthService {
+	s := &authServiceImpl{
 		repos:  repos,
 		config: config,
 		keys:   keys,
 		logger: logger,
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
+}
+
+// emit reports a token event if a sink is configured
+func (s *authServiceImpl) emit(ctx context.Context, ev models.TokenEvent) {
+	if s.events != nil {
+		s.events.TokenEvent(ctx, ev)
+	}
+}
+
+// userRef returns a pointer to userID, or nil for tokens without a user
+func userRef(userID uuid.UUID) *uuid.UUID {
+	if userID == uuid.Nil {
+		return nil
+	}
+	return &userID
 }
 
 // hashToken returns the SHA-256 hash of a token, base64url-encoded. Only
@@ -95,6 +124,10 @@ func (s *authServiceImpl) ExchangeAuthorizationCode(ctx context.Context, tenantI
 				"client_id": authCode.ClientID,
 				"user_id":   authCode.UserID,
 			}).Warn("authorization code reuse detected — token family revoked")
+			s.emit(ctx, models.TokenEvent{
+				Type: models.TokenEventReuseDetected, TenantID: tenantID, ClientID: authCode.ClientID,
+				UserID: userRef(authCode.UserID), FamilyID: authCode.ID, Credential: models.CredentialAuthorizationCode,
+			})
 		}
 		return nil, models.ErrInvalidGrant
 	}
@@ -127,7 +160,7 @@ func (s *authServiceImpl) ExchangeAuthorizationCode(ctx context.Context, tenantI
 
 	// Generate tokens; the family is keyed by the authorization code so a
 	// later code replay can revoke everything issued from it
-	auth := authContext{authTime: authCode.AuthTime, amr: authCode.AMR, nonce: authCode.Nonce}
+	auth := authContext{grantType: models.GrantTypeAuthorizationCode, authTime: authCode.AuthTime, amr: authCode.AMR, nonce: authCode.Nonce}
 	tokenResponse, err := s.issueTokens(ctx, tenantID, authCode.ClientID, authCode.UserID, authCode.Scope, authCode.ID, true, true, auth)
 	if err != nil {
 		return nil, err
@@ -167,6 +200,10 @@ func (s *authServiceImpl) GenerateClientCredentialsTokens(ctx context.Context, t
 	if err := s.repos.AccessToken.Create(ctx, accessTokenRecord); err != nil {
 		return nil, fmt.Errorf("failed to store access token: %w", err)
 	}
+	s.emit(ctx, models.TokenEvent{
+		Type: models.TokenEventIssued, TenantID: tenantID, ClientID: client.ID,
+		GrantType: models.GrantTypeClientCredentials, Scope: scope, FamilyID: accessTokenRecord.FamilyID,
+	})
 
 	return &models.TokenResponse{
 		AccessToken: accessToken,
@@ -259,6 +296,10 @@ func (s *authServiceImpl) issueTokens(ctx context.Context, tenantID, clientID, u
 		response.IDToken = idToken
 	}
 
+	s.emit(ctx, models.TokenEvent{
+		Type: models.TokenEventIssued, TenantID: tenantID, ClientID: clientID, UserID: userRef(userID),
+		GrantType: auth.grantType, Scope: scope, FamilyID: familyID,
+	})
 	return response, nil
 }
 
@@ -279,6 +320,10 @@ func (s *authServiceImpl) RefreshTokens(ctx context.Context, tenantID uuid.UUID,
 			"user_id":   token.UserID,
 			"family_id": token.FamilyID,
 		}).Warn("refresh token reuse detected — token family revoked")
+		s.emit(ctx, models.TokenEvent{
+			Type: models.TokenEventReuseDetected, TenantID: tenantID, ClientID: token.ClientID,
+			UserID: userRef(token.UserID), FamilyID: token.FamilyID, Credential: models.CredentialRefreshToken,
+		})
 		return nil, models.ErrInvalidGrant
 	}
 
@@ -305,7 +350,7 @@ func (s *authServiceImpl) RefreshTokens(ctx context.Context, tenantID uuid.UUID,
 
 	// Issue new tokens in the same family, then mark the old token rotated
 	// No nonce on refresh; auth_time stays the original authentication time
-	tokenResponse, err := s.issueTokens(ctx, tenantID, token.ClientID, token.UserID, scope, token.FamilyID, true, true, authContext{authTime: token.AuthTime, amr: token.AMR})
+	tokenResponse, err := s.issueTokens(ctx, tenantID, token.ClientID, token.UserID, scope, token.FamilyID, true, true, authContext{grantType: models.GrantTypeRefreshToken, authTime: token.AuthTime, amr: token.AMR})
 	if err != nil {
 		return nil, err
 	}
@@ -330,6 +375,10 @@ func (s *authServiceImpl) RevokeToken(ctx context.Context, tenantID uuid.UUID, t
 			}
 			// Revoking a refresh token also invalidates related access tokens
 			s.revokeTokenFamily(ctx, tenantID, refreshToken.FamilyID)
+			s.emit(ctx, models.TokenEvent{
+				Type: models.TokenEventRevoked, TenantID: tenantID, ClientID: refreshToken.ClientID,
+				UserID: userRef(refreshToken.UserID), FamilyID: refreshToken.FamilyID,
+			})
 			return nil
 		}
 	}
@@ -342,7 +391,12 @@ func (s *authServiceImpl) RevokeToken(ctx context.Context, tenantID uuid.UUID, t
 			}
 			if err := s.repos.AccessToken.Delete(ctx, tenantID, tokenHash); err != nil {
 				s.logger.WithError(err).Error("failed to delete access token on revocation")
+				return nil
 			}
+			s.emit(ctx, models.TokenEvent{
+				Type: models.TokenEventRevoked, TenantID: tenantID, ClientID: accessToken.ClientID,
+				UserID: userRef(accessToken.UserID), FamilyID: accessToken.FamilyID,
+			})
 			return nil
 		}
 	}

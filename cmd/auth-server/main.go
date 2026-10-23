@@ -23,9 +23,13 @@ import (
 	"shieldgate/internal/jwtkeys"
 	"shieldgate/internal/mfa"
 	"shieldgate/internal/middleware"
+	"shieldgate/internal/observability"
 	gormrepo "shieldgate/internal/repo/gorm"
 	"shieldgate/internal/services"
 )
+
+// serviceVersion is reported by /health and on traces
+const serviceVersion = "1.0.0"
 
 func main() {
 	// Load environment variables (optional, for backward compatibility)
@@ -58,6 +62,24 @@ func main() {
 	// Run database migrations
 	if err := database.Migrate(db); err != nil {
 		logger.Fatalf("Failed to run database migrations: %v", err)
+	}
+
+	// Tracing is exported over OTLP when OTEL_EXPORTER_OTLP_ENDPOINT is set
+	shutdownTracing, err := observability.SetupTracing(rootCtx, serviceVersion)
+	if err != nil {
+		logger.Fatalf("Failed to set up tracing: %v", err)
+	}
+	if observability.TracingEnabled() {
+		// Database spans record SQL with placeholders, never parameter values
+		if err := db.Use(observability.GormTracing{}); err != nil {
+			logger.Fatalf("Failed to enable database tracing: %v", err)
+		}
+		logger.Info("OpenTelemetry tracing enabled")
+	}
+
+	metrics := observability.NewMetrics()
+	if sqlDB, err := db.DB(); err == nil {
+		metrics.RegisterDB(sqlDB)
 	}
 
 	// Initialize Redis (optional)
@@ -97,11 +119,13 @@ func main() {
 
 	// Initialize services
 	auditService := services.NewAuditService(repos.AuditLog, logger)
-	emailService := services.NewEmailService(repos.EmailTemplate, repos.EmailQueue, cfg, logger)
+	// Token, login, MFA and account events go to metrics and the audit log
+	recorder := observability.NewRecorder(auditService, metrics, logger)
+	emailService := services.NewEmailService(repos.EmailTemplate, repos.EmailQueue, cfg, logger, services.WithEmailMetrics(metrics))
 	tenantService := services.NewTenantService(repos, logger)
 	userService := services.NewUserService(repos, emailService, cfg.ServerURL, logger)
 	clientService := services.NewClientService(repos, logger)
-	authService := services.NewAuthService(repos, cfg, jwtKeys, logger)
+	authService := services.NewAuthService(repos, cfg, jwtKeys, logger, services.WithTokenEvents(recorder))
 	sessionService := services.NewSessionService(repos.Session, repos.Consent, cfg.SessionDuration, logger)
 
 	// MFA secrets are encrypted at rest with a dedicated key when configured
@@ -171,6 +195,9 @@ func main() {
 	router := gin.New()
 
 	// Add middleware
+	// Metrics and tracing wrap Recovery so panics are still recorded as 500s
+	router.Use(metrics.HTTPMiddleware())
+	router.Use(observability.TracingMiddleware(middleware.TenantIDKey))
 	router.Use(gin.Logger())
 	router.Use(gin.Recovery())
 	router.Use(middleware.CORS(cfg))
@@ -179,6 +206,7 @@ func main() {
 	tenantDomains := middleware.NewDomainTenantResolver(repos.Tenant, time.Minute)
 	router.Use(middleware.TenantContext(jwtKeys, tenantDomains))
 	router.Use(middleware.RequestID())
+	router.Use(observability.RequestContext(middleware.RequestIDKey))
 
 	// Initialize authorization
 	superAdminIDs, err := parseUserIDs(cfg.RBACSuperAdminUserIDs)
@@ -193,10 +221,10 @@ func main() {
 	// Initialize handlers
 	tenantHandler := handlers.NewTenantHandler(tenantService, logger)
 	userHandler := handlers.NewUserHandler(userService, logger)
-	accountHandler := handlers.NewAccountHandler(cfg, userService, logger)
+	accountHandler := handlers.NewAccountHandler(cfg, userService, logger).WithRecorder(recorder)
 	clientHandler := handlers.NewClientHandler(clientService, logger)
-	oauthHandler := handlers.NewOAuthHandler(cfg, tenantService, userService, clientService, authService, sessionService, mfaService, logger)
-	mfaHandler := handlers.NewMFAHandler(mfaService, logger)
+	oauthHandler := handlers.NewOAuthHandler(cfg, tenantService, userService, clientService, authService, sessionService, mfaService, logger).WithRecorder(recorder)
+	mfaHandler := handlers.NewMFAHandler(mfaService, logger).WithRecorder(recorder)
 	rbacHandler := handlers.NewRBACHandler(roleService, permissionService, auditService, logger)
 	auditHandler := handlers.NewAuditHandler(auditService, logger)
 
@@ -210,6 +238,20 @@ func main() {
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
+	}
+
+	// Metrics get a listener of their own, kept off the public API port
+	var metricsServer *http.Server
+	if cfg.MetricsAddr != "" {
+		metricsMux := http.NewServeMux()
+		metricsMux.Handle("/metrics", metrics.Handler())
+		metricsServer = &http.Server{Addr: cfg.MetricsAddr, Handler: metricsMux, ReadHeaderTimeout: 5 * time.Second}
+		go func() {
+			logger.Infof("Metrics listening on %s", cfg.MetricsAddr)
+			if err := metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				logger.Errorf("Metrics server failed: %v", err)
+			}
+		}()
 	}
 
 	// Start server in a goroutine
@@ -236,6 +278,15 @@ func main() {
 
 	if err := server.Shutdown(ctx); err != nil {
 		logger.Fatalf("Server forced to shutdown: %v", err)
+	}
+	if metricsServer != nil {
+		if err := metricsServer.Shutdown(ctx); err != nil {
+			logger.Warnf("Metrics server shutdown: %v", err)
+		}
+	}
+	// Flush buffered spans
+	if err := shutdownTracing(ctx); err != nil {
+		logger.Warnf("Tracing shutdown: %v", err)
 	}
 
 	logger.Info("Server exited")
@@ -319,7 +370,7 @@ func setupRoutes(
 			"db":          dbStatus,
 			"redis":       redisStatus,
 			"timestamp":   time.Now().UTC(),
-			"version":     "1.0.0",
+			"version":     serviceVersion,
 			"environment": cfg.GinMode,
 		})
 	})

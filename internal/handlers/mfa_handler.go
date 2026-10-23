@@ -10,13 +10,28 @@ import (
 
 	"shieldgate/internal/middleware"
 	"shieldgate/internal/models"
+	"shieldgate/internal/observability"
 	"shieldgate/internal/services"
 )
 
 // MFAHandler manages a user's second factors through the management API
 type MFAHandler struct {
 	mfaService services.MFAService
+	events     *observability.Recorder
 	logger     *logrus.Logger
+}
+
+// WithRecorder makes the handler audit MFA changes
+func (h *MFAHandler) WithRecorder(events *observability.Recorder) *MFAHandler {
+	h.events = events
+	return h
+}
+
+// record audits an MFA change of the target user
+func (h *MFAHandler) record(c *gin.Context, action models.AuditAction, tenantID, userID uuid.UUID, metadata map[string]interface{}) {
+	h.events.Record(c.Request.Context(), observability.Event{
+		Action: action, TenantID: tenantID, UserID: &userID, Success: true, Metadata: metadata,
+	})
 }
 
 // NewMFAHandler creates a new MFAHandler instance
@@ -112,6 +127,7 @@ func (h *MFAHandler) ConfirmTOTP(c *gin.Context) {
 		h.fail(c, err, "failed to confirm TOTP enrollment")
 		return
 	}
+	h.record(c, models.AuditActionMFAEnabled, tenantID, userID, map[string]interface{}{"method": models.MFAMethodTOTP})
 	middleware.RespondWithSuccess(c, http.StatusOK, models.MFARecoveryCodes{RecoveryCodes: codes})
 }
 
@@ -130,6 +146,7 @@ func (h *MFAHandler) RegenerateRecoveryCodes(c *gin.Context) {
 		h.fail(c, err, "failed to regenerate recovery codes")
 		return
 	}
+	h.record(c, models.AuditActionUserUpdated, tenantID, userID, map[string]interface{}{"change": "mfa_recovery_codes_regenerated"})
 	middleware.RespondWithSuccess(c, http.StatusOK, models.MFARecoveryCodes{RecoveryCodes: codes})
 }
 
@@ -147,6 +164,7 @@ func (h *MFAHandler) Disable(c *gin.Context) {
 		h.fail(c, err, "failed to disable MFA")
 		return
 	}
+	h.record(c, models.AuditActionMFADisabled, tenantID, userID, nil)
 	c.Status(http.StatusNoContent)
 }
 
@@ -167,6 +185,7 @@ func (h *MFAHandler) Reset(c *gin.Context) {
 		"user_id":   userID,
 		"admin_id":  admin,
 	}).Warn("MFA reset by administrator")
+	h.record(c, models.AuditActionMFAReset, tenantID, userID, map[string]interface{}{"admin_id": admin.String()})
 	c.Status(http.StatusNoContent)
 }
 

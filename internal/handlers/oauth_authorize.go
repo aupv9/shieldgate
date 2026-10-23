@@ -10,6 +10,7 @@ import (
 
 	"shieldgate/internal/middleware"
 	"shieldgate/internal/models"
+	"shieldgate/internal/observability"
 	"shieldgate/internal/services"
 
 	"github.com/gin-gonic/gin"
@@ -200,6 +201,7 @@ func (h *OAuthHandler) HandleLogin(c *gin.Context) {
 			"tenant_id": tenantID,
 			"username":  username,
 		}).Warn("authentication failed")
+		h.recordLoginFailure(c, tenantID, mfaPurposeLogin, username, err)
 		h.renderLoginPage(c, tenantID, ar, "Invalid email or password")
 		return
 	}
@@ -211,6 +213,7 @@ func (h *OAuthHandler) HandleLogin(c *gin.Context) {
 		return
 	}
 	if required {
+		h.record(c, observability.Event{Name: "login", Result: "mfa_required"})
 		h.startMFA(c, tenantID, user.ID, mfaPurposeLogin, "/oauth/login/mfa", authorizationFormData(ar))
 		return
 	}
@@ -232,8 +235,27 @@ func (h *OAuthHandler) signIn(c *gin.Context, tenantID uuid.UUID, ar *authorizat
 		return
 	}
 	h.setSessionCookie(c, token)
+	h.record(c, observability.Event{
+		Action: models.AuditActionUserLogin, TenantID: tenantID, UserID: &userID, ClientID: &ar.client.ID,
+		Success: true, Metadata: map[string]interface{}{"amr": amr, "flow": mfaPurposeLogin},
+		Name: "login", Result: "success",
+	})
 
 	h.continueAuthorization(c, tenantID, ar, session)
+}
+
+// recordLoginFailure audits a failed password check. The attempted
+// username is kept so credential-stuffing patterns are visible.
+func (h *OAuthHandler) recordLoginFailure(c *gin.Context, tenantID uuid.UUID, flow, username string, err error) {
+	result := "invalid_credentials"
+	if errors.Is(err, models.ErrUserLocked) {
+		result = "locked"
+	}
+	h.record(c, observability.Event{
+		Action: models.AuditActionUserLoginFailed, TenantID: tenantID, ErrorCode: result,
+		Metadata: map[string]interface{}{"username": username, "flow": flow},
+		Name:     "login", Result: result,
+	})
 }
 
 // HandleConsent handles the consent form: on approval it remembers the
@@ -269,6 +291,10 @@ func (h *OAuthHandler) HandleConsent(c *gin.Context) {
 			"user_id":   session.UserID,
 			"client_id": ar.client.ClientID,
 		}).Info("user denied consent")
+		h.record(c, observability.Event{
+			Action: models.AuditActionConsentDenied, TenantID: tenantID, UserID: &session.UserID, ClientID: &ar.client.ID,
+			Metadata: map[string]interface{}{"scope": ar.scope}, Name: "consent", Result: "denied",
+		})
 		h.renderError(c, "access_denied", "The user denied the request", ar.RedirectURI, ar.State)
 		return
 	}
@@ -278,6 +304,10 @@ func (h *OAuthHandler) HandleConsent(c *gin.Context) {
 		h.renderError(c, "server_error", "Internal server error", ar.RedirectURI, ar.State)
 		return
 	}
+	h.record(c, observability.Event{
+		Action: models.AuditActionConsentGranted, TenantID: tenantID, UserID: &session.UserID, ClientID: &ar.client.ID,
+		Success: true, Metadata: map[string]interface{}{"scope": ar.scope}, Name: "consent", Result: "granted",
+	})
 
 	h.issueAuthorizationCode(c, tenantID, ar, session)
 }
