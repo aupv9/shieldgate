@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"time"
 
@@ -313,17 +314,7 @@ func (s *authServiceImpl) RefreshTokens(ctx context.Context, tenantID uuid.UUID,
 	// Reuse detection: a rotated (revoked) token being replayed means the
 	// token may be compromised — revoke the whole family
 	if token.IsRevoked() {
-		s.revokeTokenFamily(ctx, tenantID, token.FamilyID)
-		s.logger.WithFields(logrus.Fields{
-			"tenant_id": tenantID,
-			"client_id": token.ClientID,
-			"user_id":   token.UserID,
-			"family_id": token.FamilyID,
-		}).Warn("refresh token reuse detected — token family revoked")
-		s.emit(ctx, models.TokenEvent{
-			Type: models.TokenEventReuseDetected, TenantID: tenantID, ClientID: token.ClientID,
-			UserID: userRef(token.UserID), FamilyID: token.FamilyID, Credential: models.CredentialRefreshToken,
-		})
+		s.refreshTokenReused(ctx, tenantID, token)
 		return nil, models.ErrInvalidGrant
 	}
 
@@ -348,18 +339,53 @@ func (s *authServiceImpl) RefreshTokens(ctx context.Context, tenantID uuid.UUID,
 		scope = requestedScope
 	}
 
-	// Issue new tokens in the same family, then mark the old token rotated
-	// No nonce on refresh; auth_time stays the original authentication time
+	// Rotate: claim the old token before issuing new ones. The claim is an
+	// atomic conditional update, so of concurrent requests presenting the
+	// same token exactly one gets new tokens; the others are replays.
+	claimed, err := s.repos.RefreshToken.Revoke(ctx, tenantID, token.Token)
+	if err != nil {
+		return nil, fmt.Errorf("failed to rotate refresh token: %w", err)
+	}
+	if !claimed {
+		s.refreshTokenReused(ctx, tenantID, token)
+		return nil, models.ErrInvalidGrant
+	}
+
+	// Issue new tokens in the same family. No nonce on refresh; auth_time
+	// stays the original authentication time
 	tokenResponse, err := s.issueTokens(ctx, tenantID, token.ClientID, token.UserID, scope, token.FamilyID, true, true, authContext{grantType: models.GrantTypeRefreshToken, authTime: token.AuthTime, amr: token.AMR})
 	if err != nil {
 		return nil, err
 	}
 
-	if err := s.repos.RefreshToken.Revoke(ctx, tenantID, hashToken(refreshToken)); err != nil {
-		s.logger.WithError(err).Error("failed to mark rotated refresh token as revoked")
+	// A concurrent replay may have revoked the family (deleting its rows,
+	// the claimed token included) before the new tokens were stored, which
+	// would leave them alive. The new tokens are stored by now, so either the
+	// revocation still removes them or the claimed token is already gone.
+	if _, err := s.repos.RefreshToken.GetByToken(ctx, tenantID, token.Token); err != nil {
+		if !errors.Is(err, models.ErrRefreshTokenNotFound) {
+			return nil, fmt.Errorf("failed to confirm refresh token rotation: %w", err)
+		}
+		s.revokeTokenFamily(ctx, tenantID, token.FamilyID)
+		return nil, models.ErrInvalidGrant
 	}
-
 	return tokenResponse, nil
+}
+
+// refreshTokenReused handles a replay of an already rotated refresh token:
+// the token may be compromised, so the whole family is revoked
+func (s *authServiceImpl) refreshTokenReused(ctx context.Context, tenantID uuid.UUID, token *models.RefreshToken) {
+	s.revokeTokenFamily(ctx, tenantID, token.FamilyID)
+	s.logger.WithFields(logrus.Fields{
+		"tenant_id": tenantID,
+		"client_id": token.ClientID,
+		"user_id":   token.UserID,
+		"family_id": token.FamilyID,
+	}).Warn("refresh token reuse detected — token family revoked")
+	s.emit(ctx, models.TokenEvent{
+		Type: models.TokenEventReuseDetected, TenantID: tenantID, ClientID: token.ClientID,
+		UserID: userRef(token.UserID), FamilyID: token.FamilyID, Credential: models.CredentialRefreshToken,
+	})
 }
 
 func (s *authServiceImpl) RevokeToken(ctx context.Context, tenantID uuid.UUID, token, tokenTypeHint string, requestingClientID uuid.UUID) error {
@@ -419,19 +445,28 @@ func (s *authServiceImpl) IntrospectToken(ctx context.Context, tenantID uuid.UUI
 	// Look up the stored (hashed) access token record — this covers both
 	// revocation state and opaque token metadata
 	accessToken, err := s.repos.AccessToken.GetByToken(ctx, tenantID, hashToken(token))
+	// An inactive token reveals nothing else (RFC 7662 §2.2)
+	if err != nil || accessToken.IsExpired() {
+		return &models.IntrospectionResponse{Active: false}, nil
+	}
+	// client_id is the client's public identifier, not the internal row ID
+	client, err := s.repos.Client.GetByID(ctx, tenantID, accessToken.ClientID)
 	if err != nil {
 		return &models.IntrospectionResponse{Active: false}, nil
 	}
 
 	response := &models.IntrospectionResponse{
-		Active:   !accessToken.IsExpired(),
-		Scope:    accessToken.Scope,
-		ClientID: accessToken.ClientID.String(),
-		Exp:      accessToken.ExpiresAt.Unix(),
-		Iat:      accessToken.CreatedAt.Unix(),
+		Active:    true,
+		Scope:     accessToken.Scope,
+		ClientID:  client.ClientID,
+		TokenType: "Bearer",
+		Exp:       accessToken.ExpiresAt.Unix(),
+		Iat:       accessToken.CreatedAt.Unix(),
+		Iss:       s.config.ServerURL,
 	}
 	if accessToken.UserID != uuid.Nil {
-		response.UserID = accessToken.UserID.String()
+		response.Sub = accessToken.UserID.String()
+		response.UserID = response.Sub
 	}
 	return response, nil
 }

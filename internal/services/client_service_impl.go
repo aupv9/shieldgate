@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
+	"time"
 
 	"shieldgate/internal/models"
 	"shieldgate/internal/repo"
@@ -15,15 +16,17 @@ import (
 )
 
 type clientServiceImpl struct {
-	repos  *repo.Repositories
-	logger *logrus.Logger
+	repos   *repo.Repositories
+	secrets *clientSecretCache
+	logger  *logrus.Logger
 }
 
 // NewClientService creates a new client service implementation
 func NewClientService(repos *repo.Repositories, logger *logrus.Logger) ClientService {
 	return &clientServiceImpl{
-		repos:  repos,
-		logger: logger,
+		repos:   repos,
+		secrets: newClientSecretCache(clientSecretCacheTTL, time.Now),
+		logger:  logger,
 	}
 }
 
@@ -240,16 +243,26 @@ func (s *clientServiceImpl) ValidateClient(ctx context.Context, tenantID uuid.UU
 	}
 
 	// For confidential clients, validate secret against the stored bcrypt hash
-	if clientSecret == "" || client.ClientSecret == "" ||
-		bcrypt.CompareHashAndPassword([]byte(client.ClientSecret), []byte(clientSecret)) != nil {
-		s.logger.WithFields(logrus.Fields{
-			"tenant_id": tenantID,
-			"client_id": clientID,
-		}).Warn("client secret validation failed")
-		return nil, models.ErrInvalidClient
+	if clientSecret == "" || client.ClientSecret == "" {
+		return nil, s.secretRejected(tenantID, clientID)
 	}
+	if s.secrets.verified(client.ID, client.ClientSecret, clientSecret) {
+		return client, nil
+	}
+	if bcrypt.CompareHashAndPassword([]byte(client.ClientSecret), []byte(clientSecret)) != nil {
+		return nil, s.secretRejected(tenantID, clientID)
+	}
+	s.secrets.remember(client.ID, client.ClientSecret, clientSecret)
 
 	return client, nil
+}
+
+func (s *clientServiceImpl) secretRejected(tenantID uuid.UUID, clientID string) error {
+	s.logger.WithFields(logrus.Fields{
+		"tenant_id": tenantID,
+		"client_id": clientID,
+	}).Warn("client secret validation failed")
+	return models.ErrInvalidClient
 }
 
 func (s *clientServiceImpl) ValidateRedirectURI(ctx context.Context, client *models.Client, redirectURI string) error {

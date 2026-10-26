@@ -1,0 +1,285 @@
+{
+    "alias": "shieldgate",
+    "description": "ShieldGate RP-initiated logout (scripts/conformance/oidf)",
+    "server": {
+        "discoveryUrl": "{ISSUER}/.well-known/openid-configuration"
+    },
+    "client": {
+        "client_id": "conformance-rp",
+        "client_secret": "conformance-client-secret-0123456789",
+        "scope": "openid email profile"
+    },
+    "client2": {
+        "client_id": "conformance-rp-2",
+        "client_secret": "conformance-client-secret-0123456789",
+        "scope": "openid email profile"
+    },
+    "client_secret_post": {
+        "client_id": "conformance-rp-2",
+        "client_secret": "conformance-client-secret-0123456789",
+        "scope": "openid email profile"
+    },
+    "browser": [
+        {
+            "match": "{ISSUER}/oauth/authorize*",
+            "tasks": [
+                {
+                    "task": "Login",
+                    "optional": true,
+                    "match": "{ISSUER}/oauth/authorize*",
+                    "commands": [
+                        [
+                            "wait",
+                            "id",
+                            "loginForm",
+                            10,
+                            "(?s).*Password.*",
+                            "update-image-placeholder-optional"
+                        ],
+                        [
+                            "text",
+                            "id",
+                            "username",
+                            "conformance@example.com"
+                        ],
+                        [
+                            "text",
+                            "id",
+                            "password",
+                            "Conformance-Passw0rd!"
+                        ],
+                        [
+                            "click",
+                            "id",
+                            "loginBtn"
+                        ]
+                    ]
+                },
+                {
+                    "task": "Consent",
+                    "optional": true,
+                    "match": "{ISSUER}/oauth/login*",
+                    "commands": [
+                        [
+                            "click",
+                            "css",
+                            "button.allow"
+                        ]
+                    ]
+                },
+                {
+                    "task": "Verify Complete",
+                    "match": "*/test/*/callback*",
+                    "commands": [
+                        [
+                            "wait",
+                            "id",
+                            "submission_complete",
+                            10
+                        ]
+                    ]
+                }
+            ]
+        },
+        {
+            "match": "{ISSUER}/oauth/logout*",
+            "tasks": [
+                {
+                    "task": "Capture logout page",
+                    "optional": true,
+                    "match": "{ISSUER}/oauth/logout*",
+                    "commands": [
+                        [
+                            "wait",
+                            "css",
+                            "h1",
+                            10,
+                            "(?s).+",
+                            "update-image-placeholder-optional"
+                        ]
+                    ]
+                }
+            ]
+        }
+    ],
+    "override": {
+        "oidcc-rp-initiated-logout-only-state": {
+            "browser": [
+                {
+                    "match": "{ISSUER}/oauth/authorize*",
+                    "tasks": [
+                        {
+                            "task": "Login",
+                            "optional": true,
+                            "match": "{ISSUER}/oauth/authorize*",
+                            "commands": [
+                                [
+                                    "wait",
+                                    "id",
+                                    "loginForm",
+                                    10,
+                                    "(?s).*Password.*",
+                                    "update-image-placeholder-optional"
+                                ],
+                                [
+                                    "text",
+                                    "id",
+                                    "username",
+                                    "conformance@example.com"
+                                ],
+                                [
+                                    "text",
+                                    "id",
+                                    "password",
+                                    "Conformance-Passw0rd!"
+                                ],
+                                [
+                                    "click",
+                                    "id",
+                                    "loginBtn"
+                                ]
+                            ]
+                        },
+                        {
+                            "task": "Consent",
+                            "optional": true,
+                            "match": "{ISSUER}/oauth/login*",
+                            "commands": [
+                                [
+                                    "click",
+                                    "css",
+                                    "button.allow"
+                                ]
+                            ]
+                        },
+                        {
+                            "task": "Verify Complete",
+                            "match": "*/test/*/callback*",
+                            "commands": [
+                                [
+                                    "wait",
+                                    "id",
+                                    "submission_complete",
+                                    10
+                                ]
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "match": "{ISSUER}/oauth/logout*",
+                    "tasks": [
+                        {
+                            "task": "Confirm sign-out",
+                            "match": "{ISSUER}/oauth/logout*",
+                            "commands": [
+                                [
+                                    "click",
+                                    "css",
+                                    "form[action='/oauth/logout'] button"
+                                ],
+                                [
+                                    "wait",
+                                    "css",
+                                    "h1",
+                                    10,
+                                    "(?i).*signed out.*",
+                                    "update-image-placeholder"
+                                ]
+                            ]
+                        }
+                    ]
+                }
+            ]
+        },
+        "oidcc-rp-initiated-logout-no-params": {
+            "browser": [
+                {
+                    "match": "{ISSUER}/oauth/authorize*",
+                    "tasks": [
+                        {
+                            "task": "Login",
+                            "optional": true,
+                            "match": "{ISSUER}/oauth/authorize*",
+                            "commands": [
+                                [
+                                    "wait",
+                                    "id",
+                                    "loginForm",
+                                    10,
+                                    "(?s).*Password.*",
+                                    "update-image-placeholder-optional"
+                                ],
+                                [
+                                    "text",
+                                    "id",
+                                    "username",
+                                    "conformance@example.com"
+                                ],
+                                [
+                                    "text",
+                                    "id",
+                                    "password",
+                                    "Conformance-Passw0rd!"
+                                ],
+                                [
+                                    "click",
+                                    "id",
+                                    "loginBtn"
+                                ]
+                            ]
+                        },
+                        {
+                            "task": "Consent",
+                            "optional": true,
+                            "match": "{ISSUER}/oauth/login*",
+                            "commands": [
+                                [
+                                    "click",
+                                    "css",
+                                    "button.allow"
+                                ]
+                            ]
+                        },
+                        {
+                            "task": "Verify Complete",
+                            "match": "*/test/*/callback*",
+                            "commands": [
+                                [
+                                    "wait",
+                                    "id",
+                                    "submission_complete",
+                                    10
+                                ]
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "match": "{ISSUER}/oauth/logout*",
+                    "tasks": [
+                        {
+                            "task": "Confirm sign-out",
+                            "match": "{ISSUER}/oauth/logout*",
+                            "commands": [
+                                [
+                                    "click",
+                                    "css",
+                                    "form[action='/oauth/logout'] button"
+                                ],
+                                [
+                                    "wait",
+                                    "css",
+                                    "h1",
+                                    10,
+                                    "(?i).*signed out.*",
+                                    "update-image-placeholder"
+                                ]
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+}

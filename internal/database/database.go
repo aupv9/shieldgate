@@ -2,6 +2,9 @@ package database
 
 import (
 	"fmt"
+	"log"
+	"os"
+	"time"
 
 	"github.com/sirupsen/logrus"
 	"gorm.io/driver/postgres"
@@ -10,11 +13,20 @@ import (
 )
 
 // Initialize initializes the database connection using GORM
-func Initialize(databaseURL string) (*gorm.DB, error) {
+func Initialize(databaseURL string, logLevel logrus.Level) (*gorm.DB, error) {
 	logrus.Info("Connecting to database...")
 
-	// Configure GORM logger
-	gormLogger := logger.Default.LogMode(logger.Info)
+	// GORM logs every statement at its Info level. That is only wanted when
+	// debugging: under load the statement log cost about a third of the
+	// server's CPU (docs/LOAD_TEST.md). Otherwise only errors and slow
+	// queries are logged.
+	gormLogger := logger.New(log.New(os.Stdout, "\r\n", log.LstdFlags), logger.Config{
+		SlowThreshold: 200 * time.Millisecond,
+		LogLevel:      gormLogLevel(logLevel),
+		// A miss is an expected outcome of most lookups, not an error
+		IgnoreRecordNotFoundError: true,
+		Colorful:                  false,
+	})
 
 	// Open database connection with GORM
 	db, err := gorm.Open(postgres.Open(databaseURL), &gorm.Config{
@@ -37,6 +49,18 @@ func Initialize(databaseURL string) (*gorm.DB, error) {
 
 	logrus.Info("Database connection established")
 	return db, nil
+}
+
+// gormLogLevel maps the server's log level to GORM's
+func gormLogLevel(level logrus.Level) logger.LogLevel {
+	switch {
+	case level >= logrus.DebugLevel:
+		return logger.Info
+	case level >= logrus.WarnLevel:
+		return logger.Warn
+	default:
+		return logger.Error
+	}
 }
 
 // Migrate runs database migrations using manual SQL

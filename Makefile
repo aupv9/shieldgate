@@ -1,7 +1,7 @@
 # ShieldGate Makefile
 # Provides convenient commands for development and deployment
 
-.PHONY: help setup build start stop restart logs clean test lint fmt vet security backup restore deploy jwt-keys
+.PHONY: help setup build start stop restart logs clean test lint fmt vet security backup restore deploy jwt-keys conformance conformance-oidf load-test
 
 # Default target
 help: ## Show this help message
@@ -84,6 +84,18 @@ test-coverage: ## Run tests with coverage
 	@go test -cover ./...
 	@go test -coverprofile=coverage.out ./...
 	@go tool cover -html=coverage.out -o coverage.html
+
+conformance: ## Run the black-box OAuth/OIDC conformance tests (needs Docker)
+	@echo "📜 Running conformance tests..."
+	@scripts/conformance/run.sh
+
+conformance-oidf: ## Run the OpenID Foundation conformance suite (needs Docker)
+	@echo "📜 Running the OpenID Foundation conformance suite..."
+	@scripts/conformance/oidf/run.sh
+
+load-test: ## Run the k6 token endpoint load test against a server from scripts/conformance/serve.sh
+	@echo "🏋️ Running load test..."
+	@scripts/load/run.sh
 
 lint: ## Run linter
 	@echo "🔍 Running linter..."
