@@ -40,6 +40,9 @@ func TestCodeFlow_ConfidentialClient_TokenResponseAndIDToken(t *testing.T) {
 			assert.Equal(t, leftHalfHash(tokens["access_token"].(string)), claims["at_hash"], "§3.1.3.6: at_hash")
 			authTime, _ := claims["auth_time"].(float64)
 			assert.InDelta(t, float64(time.Now().Unix()), authTime, 300, "auth_time is when the user logged in")
+			access := b.verifyAccessToken(tokens["access_token"].(string))
+			assert.Equal(t, clientID, access["client_id"], "RFC 9068 §2.2: the public client_id")
+			assert.Equal(t, fixture.UserID.String(), access["sub"])
 		})
 	}
 }
@@ -186,6 +189,10 @@ func TestClientCredentials_AccessTokenWithoutRefreshToken(t *testing.T) {
 	assert.NotContains(t, tokens, "refresh_token", "§4.4.3: a refresh token SHOULD NOT be included")
 	assert.NotContains(t, tokens, "id_token")
 	assert.Equal(t, "read", tokens["scope"])
+	access := b.verifyAccessToken(tokens["access_token"].(string))
+	assert.Equal(t, fixture.MachineClient, access["client_id"])
+	assert.Equal(t, fixture.MachineClient, access["sub"], "RFC 9068 §2.2: without a user, the subject is the client")
+	assert.Equal(t, "read", access["scope"])
 }
 
 func (b *browser) postBasic(path, user, password string, form url.Values) response {

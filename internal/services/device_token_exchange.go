@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"shieldgate/internal/jwtkeys"
 	"shieldgate/internal/models"
 
 	"github.com/google/uuid"
@@ -176,7 +177,7 @@ func (s *authServiceImpl) ExchangeDeviceCode(ctx context.Context, tenantID uuid.
 		if err := s.repos.DeviceCode.Delete(ctx, tenantID, dc.DeviceCode); err != nil {
 			return nil, models.ErrInvalidGrant
 		}
-		tokens, err := s.issueTokens(ctx, tenantID, dc.ClientID, *dc.UserID, dc.Scope, dc.ID, true, true, authContext{grantType: models.GrantTypeDeviceCode, authTime: dc.AuthTime, amr: dc.AMR})
+		tokens, err := s.issueTokens(ctx, tenantID, client, *dc.UserID, dc.Scope, dc.ID, true, true, authContext{grantType: models.GrantTypeDeviceCode, authTime: dc.AuthTime, amr: dc.AMR})
 		if err != nil {
 			return nil, err
 		}
@@ -222,17 +223,17 @@ func (s *authServiceImpl) ExchangeToken(ctx context.Context, tenantID uuid.UUID,
 	claims := &models.JWTClaims{
 		Jti:      uuid.NewString(),
 		Sub:      subjectClaims.Sub,
-		Aud:      client.ID.String(),
+		Aud:      s.accessTokenAudience(),
 		Iss:      s.config.ServerURL,
 		Exp:      now.Add(s.config.AccessTokenDuration).Unix(),
 		Iat:      now.Unix(),
 		TenantID: tenantID.String(),
 		Scope:    scope,
-		ClientID: client.ID.String(),
+		ClientID: client.ClientID,
 		UserID:   subjectClaims.UserID,
-		Act:      &models.ActorClaim{Sub: client.ID.String()},
+		Act:      &models.ActorClaim{Sub: client.ClientID},
 	}
-	accessToken, err := s.keys.Sign(claims)
+	accessToken, err := s.keys.SignTyped(claims, jwtkeys.TypeAccessToken)
 	if err != nil {
 		return nil, err
 	}

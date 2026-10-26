@@ -201,9 +201,10 @@ func TestExchangeAuthorizationCode_Success_StoresHashedTokens(t *testing.T) {
 // ---- Authorization code single use + reuse revocation (1.7) ----
 
 func TestExchangeAuthorizationCode_Reuse_RevokesIssuedTokens(t *testing.T) {
-	svc, _ := newAuthServiceWithFakes()
+	svc, repos := newAuthServiceWithFakes()
 	ctx := context.Background()
 	tenantID, clientUUID := uuid.New(), uuid.New()
+	registerClient(t, repos, tenantID, clientUUID)
 	userID := uuid.New()
 
 	authCode, err := svc.GenerateAuthorizationCode(ctx, tenantID, clientUUID, userID, "https://app/cb", "read", "", "", "", time.Now(), nil)
@@ -226,9 +227,10 @@ func TestExchangeAuthorizationCode_Reuse_RevokesIssuedTokens(t *testing.T) {
 // ---- Refresh token rotation + reuse detection (1.6) ----
 
 func TestRefreshTokens_RotationKeepsScopeAndDetectsReuse(t *testing.T) {
-	svc, _ := newAuthServiceWithFakes()
+	svc, repos := newAuthServiceWithFakes()
 	ctx := context.Background()
 	tenantID, clientUUID := uuid.New(), uuid.New()
+	registerClient(t, repos, tenantID, clientUUID)
 	userID := uuid.New()
 
 	original, err := svc.GenerateTokens(ctx, tenantID, clientUUID, userID, "read write", false)
@@ -252,9 +254,10 @@ func TestRefreshTokens_RotationKeepsScopeAndDetectsReuse(t *testing.T) {
 
 func TestRefreshTokens_ConcurrentReplay_AtMostOneSucceedsAndFamilyRevoked(t *testing.T) {
 	// Arrange
-	svc, _ := newAuthServiceWithFakes()
+	svc, repos := newAuthServiceWithFakes()
 	ctx := context.Background()
 	tenantID, clientUUID := uuid.New(), uuid.New()
+	registerClient(t, repos, tenantID, clientUUID)
 	original, err := svc.GenerateTokens(ctx, tenantID, clientUUID, uuid.New(), "read", false)
 	require.NoError(t, err)
 	const attempts = 20
@@ -303,6 +306,7 @@ func TestRefreshTokens_FamilyRevokedWhileIssuing_NewTokensRevoked(t *testing.T) 
 	svc, repos := newAuthServiceWithFakes()
 	ctx := context.Background()
 	tenantID, clientUUID := uuid.New(), uuid.New()
+	registerClient(t, repos, tenantID, clientUUID)
 	original, err := svc.GenerateTokens(ctx, tenantID, clientUUID, uuid.New(), "read", false)
 	require.NoError(t, err)
 	repos.RefreshToken = familyRevokedDuringIssue{repos.RefreshToken}
@@ -317,9 +321,10 @@ func TestRefreshTokens_FamilyRevokedWhileIssuing_NewTokensRevoked(t *testing.T) 
 }
 
 func TestRefreshTokens_ScopeNarrowingAllowed_WideningRejected(t *testing.T) {
-	svc, _ := newAuthServiceWithFakes()
+	svc, repos := newAuthServiceWithFakes()
 	ctx := context.Background()
 	tenantID, clientUUID := uuid.New(), uuid.New()
+	registerClient(t, repos, tenantID, clientUUID)
 
 	original, err := svc.GenerateTokens(ctx, tenantID, clientUUID, uuid.New(), "read write", false)
 	require.NoError(t, err)
@@ -335,11 +340,12 @@ func TestRefreshTokens_ScopeNarrowingAllowed_WideningRejected(t *testing.T) {
 }
 
 func TestRefreshTokens_WrongClient_Rejected(t *testing.T) {
-	svc, _ := newAuthServiceWithFakes()
+	svc, repos := newAuthServiceWithFakes()
 	ctx := context.Background()
 	tenantID := uuid.New()
+	owner := registerClient(t, repos, tenantID, uuid.New())
 
-	original, err := svc.GenerateTokens(ctx, tenantID, uuid.New(), uuid.New(), "read", false)
+	original, err := svc.GenerateTokens(ctx, tenantID, owner.ID, uuid.New(), "read", false)
 	require.NoError(t, err)
 
 	_, err = svc.RefreshTokens(ctx, tenantID, original.RefreshToken, uuid.New().String(), "")
@@ -362,16 +368,18 @@ func TestGenerateClientCredentialsTokens_NoRefreshToken_SubjectIsClient(t *testi
 
 	claims, err := svc.ValidateAccessToken(ctx, tenantID, tokens.AccessToken)
 	require.NoError(t, err)
-	assert.Equal(t, client.ID.String(), claims.Sub, "subject must be the client, not a user")
+	assert.Equal(t, "m2m-client", claims.Sub, "subject must be the client's client_id, not a user (RFC 9068 §2.2)")
+	assert.Equal(t, "m2m-client", claims.ClientID)
 	assert.Empty(t, claims.UserID)
 }
 
 // ---- Revocation (1.3, 1.8) ----
 
 func TestRevokeToken_AccessToken_EnforcedOnValidation(t *testing.T) {
-	svc, _ := newAuthServiceWithFakes()
+	svc, repos := newAuthServiceWithFakes()
 	ctx := context.Background()
 	tenantID, clientUUID := uuid.New(), uuid.New()
+	registerClient(t, repos, tenantID, clientUUID)
 
 	tokens, err := svc.GenerateTokens(ctx, tenantID, clientUUID, uuid.New(), "read", false)
 	require.NoError(t, err)
@@ -387,9 +395,10 @@ func TestRevokeToken_AccessToken_EnforcedOnValidation(t *testing.T) {
 }
 
 func TestRevokeToken_RefreshToken_RevokesFamily(t *testing.T) {
-	svc, _ := newAuthServiceWithFakes()
+	svc, repos := newAuthServiceWithFakes()
 	ctx := context.Background()
 	tenantID, clientUUID := uuid.New(), uuid.New()
+	registerClient(t, repos, tenantID, clientUUID)
 
 	tokens, err := svc.GenerateTokens(ctx, tenantID, clientUUID, uuid.New(), "read", false)
 	require.NoError(t, err)
@@ -404,9 +413,10 @@ func TestRevokeToken_RefreshToken_RevokesFamily(t *testing.T) {
 }
 
 func TestRevokeToken_OtherClientsToken_Ignored(t *testing.T) {
-	svc, _ := newAuthServiceWithFakes()
+	svc, repos := newAuthServiceWithFakes()
 	ctx := context.Background()
 	tenantID, ownerClient, otherClient := uuid.New(), uuid.New(), uuid.New()
+	registerClient(t, repos, tenantID, ownerClient)
 
 	tokens, err := svc.GenerateTokens(ctx, tenantID, ownerClient, uuid.New(), "read", false)
 	require.NoError(t, err)

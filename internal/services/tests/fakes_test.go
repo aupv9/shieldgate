@@ -7,13 +7,24 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/require"
 
 	"shieldgate/internal/models"
 	"shieldgate/internal/repo"
 )
+
+// registerClient stores a client with internal ID id, so tokens can be
+// issued for it; its public client_id is derived from id
+func registerClient(t *testing.T, repos *repo.Repositories, tenantID, id uuid.UUID) *models.Client {
+	t.Helper()
+	client := &models.Client{ID: id, TenantID: tenantID, ClientID: "client-" + id.String()[:8]}
+	require.NoError(t, repos.Client.Create(context.Background(), client))
+	return client
+}
 
 // --- fakeClientRepo ---
 

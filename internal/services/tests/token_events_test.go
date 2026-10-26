@@ -66,7 +66,8 @@ func TestTokenEvents_IssuedForEveryGrant(t *testing.T) {
 
 	t.Run("authorization code and refresh", func(t *testing.T) {
 		// Arrange
-		svc, _, sink := newAuthServiceWithSink()
+		svc, repos, sink := newAuthServiceWithSink()
+		registerClient(t, repos, tenantID, clientID)
 		code, err := svc.GenerateAuthorizationCode(ctx, tenantID, clientID, userID, "https://app/cb", "read", "", "", "", time.Now(), nil)
 		require.NoError(t, err)
 
@@ -121,7 +122,8 @@ func TestTokenEvents_IssuedForEveryGrant(t *testing.T) {
 
 	t.Run("token exchange", func(t *testing.T) {
 		// Arrange
-		svc, _, sink := newAuthServiceWithSink()
+		svc, repos, sink := newAuthServiceWithSink()
+		registerClient(t, repos, tenantID, clientID)
 		subject, err := svc.GenerateTokens(ctx, tenantID, clientID, userID, "read", false)
 		require.NoError(t, err)
 		actor := &models.Client{ID: uuid.New(), TenantID: tenantID, ClientID: "backend",
@@ -145,7 +147,8 @@ func TestTokenEvents_ReuseDetected(t *testing.T) {
 
 	t.Run("authorization code replay", func(t *testing.T) {
 		// Arrange
-		svc, _, sink := newAuthServiceWithSink()
+		svc, repos, sink := newAuthServiceWithSink()
+		registerClient(t, repos, tenantID, clientID)
 		code, err := svc.GenerateAuthorizationCode(ctx, tenantID, clientID, userID, "https://app/cb", "read", "", "", "", time.Now(), nil)
 		require.NoError(t, err)
 		_, err = svc.ExchangeAuthorizationCode(ctx, tenantID, code.Code, clientID.String(), "", "https://app/cb", "")
@@ -165,7 +168,8 @@ func TestTokenEvents_ReuseDetected(t *testing.T) {
 
 	t.Run("refresh token replay", func(t *testing.T) {
 		// Arrange
-		svc, _, sink := newAuthServiceWithSink()
+		svc, repos, sink := newAuthServiceWithSink()
+		registerClient(t, repos, tenantID, clientID)
 		original, err := svc.GenerateTokens(ctx, tenantID, clientID, userID, "read", false)
 		require.NoError(t, err)
 		_, err = svc.RefreshTokens(ctx, tenantID, original.RefreshToken, clientID.String(), "")
@@ -195,7 +199,8 @@ func TestTokenEvents_Revoked(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Arrange
-			svc, _, sink := newAuthServiceWithSink()
+			svc, repos, sink := newAuthServiceWithSink()
+			registerClient(t, repos, tenantID, clientID)
 			tokens, err := svc.GenerateTokens(ctx, tenantID, clientID, userID, "read", false)
 			require.NoError(t, err)
 

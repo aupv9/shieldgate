@@ -287,16 +287,8 @@ func (b *browser) userinfo(accessToken string) response {
 // party to, and returns its claims
 func (b *browser) verifyIDToken(raw, clientID, nonce string) jwt.MapClaims {
 	b.t.Helper()
-	keys := b.signingKeys()
 	claims := jwt.MapClaims{}
-	_, err := jwt.ParseWithClaims(raw, claims, func(token *jwt.Token) (interface{}, error) {
-		kid, _ := token.Header["kid"].(string)
-		key, ok := keys[kid]
-		if !ok {
-			return nil, fmt.Errorf("no JWKS key for kid %q", kid)
-		}
-		return key, nil
-	},
+	token, err := jwt.ParseWithClaims(raw, claims, b.jwksKeyfunc(),
 		jwt.WithValidMethods([]string{"RS256"}), // §3.1.3.7 step 7: the advertised alg
 		jwt.WithIssuer(b.base),                  // step 2: iss equals the issuer exactly
 		jwt.WithAudience(clientID),              // step 3: aud contains the client_id
@@ -305,6 +297,7 @@ func (b *browser) verifyIDToken(raw, clientID, nonce string) jwt.MapClaims {
 		jwt.WithLeeway(5*time.Second),
 	)
 	require.NoError(b.t, err, "ID token must verify")
+	require.NotEqual(b.t, "at+jwt", token.Header["typ"], "an ID token is not typed as an access token")
 
 	// Step 4/5: a single audience, or azp naming the client
 	if aud, ok := claims["aud"].([]interface{}); ok && len(aud) > 1 {
@@ -316,6 +309,41 @@ func (b *browser) verifyIDToken(raw, clientID, nonce string) jwt.MapClaims {
 		require.Equal(b.t, nonce, claims["nonce"], "nonce is echoed (§3.1.3.7 step 11)")
 	}
 	return claims
+}
+
+// verifyAccessToken checks a JWT access token as a resource server does
+// (RFC 9068 §4), with ShieldGate itself as the resource server, and returns
+// its claims
+func (b *browser) verifyAccessToken(raw string) jwt.MapClaims {
+	b.t.Helper()
+	claims := jwt.MapClaims{}
+	token, err := jwt.ParseWithClaims(raw, claims, b.jwksKeyfunc(),
+		jwt.WithValidMethods([]string{"RS256"}),
+		jwt.WithIssuer(b.base),
+		jwt.WithAudience(b.base),
+		jwt.WithExpirationRequired(),
+		jwt.WithIssuedAt(),
+		jwt.WithLeeway(5*time.Second),
+	)
+	require.NoError(b.t, err, "access token must verify")
+	require.Equal(b.t, "at+jwt", token.Header["typ"], "RFC 9068 §2.1")
+	for _, claim := range []string{"sub", "client_id", "jti"} {
+		require.NotEmpty(b.t, claims[claim], "RFC 9068 §2.2: %s", claim)
+	}
+	return claims
+}
+
+// jwksKeyfunc verifies tokens with the key named by kid in the JWKS
+func (b *browser) jwksKeyfunc() jwt.Keyfunc {
+	keys := b.signingKeys()
+	return func(token *jwt.Token) (interface{}, error) {
+		kid, _ := token.Header["kid"].(string)
+		key, ok := keys[kid]
+		if !ok {
+			return nil, fmt.Errorf("no JWKS key for kid %q", kid)
+		}
+		return key, nil
+	}
 }
 
 // signingKeys fetches the JWKS advertised by discovery
