@@ -10,6 +10,7 @@ import (
 
 	"shieldgate/internal/middleware"
 	"shieldgate/internal/models"
+	"shieldgate/internal/observability"
 	"shieldgate/internal/services"
 
 	"github.com/gin-gonic/gin"
@@ -200,23 +201,61 @@ func (h *OAuthHandler) HandleLogin(c *gin.Context) {
 			"tenant_id": tenantID,
 			"username":  username,
 		}).Warn("authentication failed")
+		h.recordLoginFailure(c, tenantID, mfaPurposeLogin, username, err)
 		h.renderLoginPage(c, tenantID, ar, "Invalid email or password")
 		return
 	}
 
+	required, err := h.mfaRequired(c.Request.Context(), tenantID, user.ID)
+	if err != nil {
+		h.logger.WithError(err).Error("failed to check MFA enrollment")
+		h.renderError(c, "server_error", "Internal server error", ar.RedirectURI, ar.State)
+		return
+	}
+	if required {
+		h.record(c, observability.Event{Name: "login", Result: "mfa_required"})
+		h.startMFA(c, tenantID, user.ID, mfaPurposeLogin, "/oauth/login/mfa", authorizationFormData(ar))
+		return
+	}
+
+	h.signIn(c, tenantID, ar, user.ID, []string{services.AMRPassword})
+}
+
+// signIn starts a new SSO session for a fully authenticated user and
+// continues the authorization request
+func (h *OAuthHandler) signIn(c *gin.Context, tenantID uuid.UUID, ar *authorizationRequest, userID uuid.UUID, amr []string) {
 	// Always issue a fresh session token on login, discarding any previous
 	// one, so a token planted before login cannot be reused (session fixation).
 	// The new cookie overwrites the old one, so it is not cleared here.
 	h.deleteBrowserSession(c, tenantID)
-	token, session, err := h.sessionService.CreateSession(c.Request.Context(), tenantID, user.ID, c.ClientIP(), c.Request.UserAgent())
+	token, session, err := h.sessionService.CreateSession(c.Request.Context(), tenantID, userID, amr, c.ClientIP(), c.Request.UserAgent())
 	if err != nil {
 		h.logger.WithError(err).Error("failed to create session")
 		h.renderError(c, "server_error", "Internal server error", ar.RedirectURI, ar.State)
 		return
 	}
 	h.setSessionCookie(c, token)
+	h.record(c, observability.Event{
+		Action: models.AuditActionUserLogin, TenantID: tenantID, UserID: &userID, ClientID: &ar.client.ID,
+		Success: true, Metadata: map[string]interface{}{"amr": amr, "flow": mfaPurposeLogin},
+		Name: "login", Result: "success",
+	})
 
 	h.continueAuthorization(c, tenantID, ar, session)
+}
+
+// recordLoginFailure audits a failed password check. The attempted
+// username is kept so credential-stuffing patterns are visible.
+func (h *OAuthHandler) recordLoginFailure(c *gin.Context, tenantID uuid.UUID, flow, username string, err error) {
+	result := "invalid_credentials"
+	if errors.Is(err, models.ErrUserLocked) {
+		result = "locked"
+	}
+	h.record(c, observability.Event{
+		Action: models.AuditActionUserLoginFailed, TenantID: tenantID, ErrorCode: result,
+		Metadata: map[string]interface{}{"username": username, "flow": flow},
+		Name:     "login", Result: result,
+	})
 }
 
 // HandleConsent handles the consent form: on approval it remembers the
@@ -252,6 +291,10 @@ func (h *OAuthHandler) HandleConsent(c *gin.Context) {
 			"user_id":   session.UserID,
 			"client_id": ar.client.ClientID,
 		}).Info("user denied consent")
+		h.record(c, observability.Event{
+			Action: models.AuditActionConsentDenied, TenantID: tenantID, UserID: &session.UserID, ClientID: &ar.client.ID,
+			Metadata: map[string]interface{}{"scope": ar.scope}, Name: "consent", Result: "denied",
+		})
 		h.renderError(c, "access_denied", "The user denied the request", ar.RedirectURI, ar.State)
 		return
 	}
@@ -261,6 +304,10 @@ func (h *OAuthHandler) HandleConsent(c *gin.Context) {
 		h.renderError(c, "server_error", "Internal server error", ar.RedirectURI, ar.State)
 		return
 	}
+	h.record(c, observability.Event{
+		Action: models.AuditActionConsentGranted, TenantID: tenantID, UserID: &session.UserID, ClientID: &ar.client.ID,
+		Success: true, Metadata: map[string]interface{}{"scope": ar.scope}, Name: "consent", Result: "granted",
+	})
 
 	h.issueAuthorizationCode(c, tenantID, ar, session)
 }
@@ -301,6 +348,7 @@ func (h *OAuthHandler) issueAuthorizationCode(c *gin.Context, tenantID uuid.UUID
 		ar.CodeChallengeMethod,
 		ar.Nonce,
 		session.AuthTime,
+		[]string(session.AMR),
 	)
 	if err != nil {
 		h.logger.WithError(err).Error("failed to generate authorization code")

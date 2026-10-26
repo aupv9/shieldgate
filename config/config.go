@@ -24,10 +24,17 @@ type Config struct {
 
 	// JWT. JWTSecret also keys the CSRF cookie HMAC, so it is required
 	// even when tokens are signed with RS256/ES256.
-	JWTSecret               string
-	JWTSigningAlg           string
-	JWTSigningKeyFile       string
+	JWTSecret         string
+	JWTSigningAlg     string
+	JWTSigningKeyFile string
+	// MFAEncryptionKey is a base64 32-byte key protecting TOTP secrets and
+	// recovery codes; when empty it is derived from JWTSecret
+	MFAEncryptionKey        string
 	JWTVerificationKeyFiles string
+
+	// MetricsAddr is where Prometheus metrics are served, on a listener of
+	// their own so they are not exposed with the public API; empty disables
+	MetricsAddr string
 
 	// Security
 	BcryptCost                int
@@ -89,6 +96,8 @@ func Load() (*Config, error) {
 	viper.BindEnv("jwt.secret", "JWT_SECRET")
 	viper.BindEnv("jwt.signing_alg", "JWT_SIGNING_ALG")
 	viper.BindEnv("jwt.signing_key_file", "JWT_SIGNING_KEY_FILE")
+	viper.BindEnv("security.mfa_encryption_key", "MFA_ENCRYPTION_KEY")
+	viper.BindEnv("observability.metrics_addr", "METRICS_ADDR")
 	viper.BindEnv("jwt.verification_key_files", "JWT_VERIFICATION_KEY_FILES")
 	viper.BindEnv("security.bcrypt_cost", "BCRYPT_COST")
 	viper.BindEnv("security.access_token_duration", "ACCESS_TOKEN_DURATION")
@@ -142,6 +151,8 @@ func Load() (*Config, error) {
 		JWTSecret:               viper.GetString("jwt.secret"),
 		JWTSigningAlg:           viper.GetString("jwt.signing_alg"),
 		JWTSigningKeyFile:       viper.GetString("jwt.signing_key_file"),
+		MFAEncryptionKey:        viper.GetString("security.mfa_encryption_key"),
+		MetricsAddr:             viper.GetString("observability.metrics_addr"),
 		JWTVerificationKeyFiles: viper.GetString("jwt.verification_key_files"),
 
 		// Security
@@ -219,6 +230,7 @@ func setDefaults() {
 
 	// RBAC defaults
 	viper.SetDefault("rbac.super_admin_user_ids", "")
+	viper.SetDefault("observability.metrics_addr", ":9091")
 
 	// Logging defaults
 	viper.SetDefault("logging.level", "info")

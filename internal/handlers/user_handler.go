@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -36,6 +37,7 @@ func (h *UserHandler) RegisterRoutes(router *gin.RouterGroup, authz *middleware.
 	router.DELETE("/:user_id", authz.Require("user", "delete"), h.DeleteUser)
 	router.GET("", authz.Require("user", "read"), h.ListUsers)
 	router.POST("/:user_id/change-password", authz.RequireOrSelf("user", "update", "user_id"), h.ChangePassword)
+	router.POST("/:user_id/verification-email", authz.RequireOrSelf("user", "update", "user_id"), h.SendVerificationEmail)
 }
 
 // CreateUser handles POST /v1/users
@@ -65,6 +67,17 @@ func (h *UserHandler) CreateUser(c *gin.Context) {
 		middleware.RespondWithError(c, http.StatusInternalServerError,
 			models.ErrorCodeInternalError, "Failed to create user", nil)
 		return
+	}
+
+	// Ask the new user to confirm their address. Best effort: the account
+	// exists either way, and the email can be resent.
+	if !user.EmailVerified {
+		if err := h.userService.SendVerificationEmail(c.Request.Context(), tenantID, user.ID); err != nil {
+			h.logger.WithError(err).WithFields(logrus.Fields{
+				"tenant_id": tenantID,
+				"user_id":   user.ID,
+			}).Warn("failed to send verification email to new user")
+		}
 	}
 
 	// Don't expose password hash
@@ -279,4 +292,41 @@ func (h *UserHandler) ChangePassword(c *gin.Context) {
 	}
 
 	middleware.RespondWithSuccess(c, http.StatusOK, gin.H{"message": "Password changed successfully"})
+}
+
+// SendVerificationEmail handles POST /v1/users/:user_id/verification-email.
+// It (re)sends the email address verification link.
+func (h *UserHandler) SendVerificationEmail(c *gin.Context) {
+	tenantID, err := middleware.GetTenantID(c)
+	if err != nil {
+		middleware.RespondWithError(c, http.StatusUnauthorized,
+			models.ErrorCodeUnauthorized, "Invalid tenant context", nil)
+		return
+	}
+
+	userID, err := uuid.Parse(c.Param("user_id"))
+	if err != nil {
+		middleware.RespondWithError(c, http.StatusBadRequest,
+			models.ErrorCodeInvalidRequest, "Invalid user ID format", nil)
+		return
+	}
+
+	err = h.userService.SendVerificationEmail(c.Request.Context(), tenantID, userID)
+	switch {
+	case err == nil:
+		c.Status(http.StatusAccepted)
+	case errors.Is(err, models.ErrUserNotFound):
+		middleware.RespondWithError(c, http.StatusNotFound,
+			models.ErrorCodeResourceNotFound, "User not found", nil)
+	case errors.Is(err, models.ErrEmailAlreadyVerified):
+		middleware.RespondWithError(c, http.StatusConflict,
+			models.ErrorCodeResourceConflict, "Email is already verified", nil)
+	default:
+		h.logger.WithError(err).WithFields(logrus.Fields{
+			"tenant_id": tenantID,
+			"user_id":   userID,
+		}).Error("failed to send verification email")
+		middleware.RespondWithError(c, http.StatusInternalServerError,
+			models.ErrorCodeInternalError, "Failed to send verification email", nil)
+	}
 }

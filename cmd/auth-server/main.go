@@ -21,10 +21,15 @@ import (
 	"shieldgate/internal/database"
 	"shieldgate/internal/handlers"
 	"shieldgate/internal/jwtkeys"
+	"shieldgate/internal/mfa"
 	"shieldgate/internal/middleware"
+	"shieldgate/internal/observability"
 	gormrepo "shieldgate/internal/repo/gorm"
 	"shieldgate/internal/services"
 )
+
+// serviceVersion is reported by /health and on traces
+const serviceVersion = "1.0.0"
 
 func main() {
 	// Load environment variables (optional, for backward compatibility)
@@ -57,6 +62,24 @@ func main() {
 	// Run database migrations
 	if err := database.Migrate(db); err != nil {
 		logger.Fatalf("Failed to run database migrations: %v", err)
+	}
+
+	// Tracing is exported over OTLP when OTEL_EXPORTER_OTLP_ENDPOINT is set
+	shutdownTracing, err := observability.SetupTracing(rootCtx, serviceVersion)
+	if err != nil {
+		logger.Fatalf("Failed to set up tracing: %v", err)
+	}
+	if observability.TracingEnabled() {
+		// Database spans record SQL with placeholders, never parameter values
+		if err := db.Use(observability.GormTracing{}); err != nil {
+			logger.Fatalf("Failed to enable database tracing: %v", err)
+		}
+		logger.Info("OpenTelemetry tracing enabled")
+	}
+
+	metrics := observability.NewMetrics()
+	if sqlDB, err := db.DB(); err == nil {
+		metrics.RegisterDB(sqlDB)
 	}
 
 	// Initialize Redis (optional)
@@ -96,21 +119,30 @@ func main() {
 
 	// Initialize services
 	auditService := services.NewAuditService(repos.AuditLog, logger)
-	emailService := services.NewEmailService(
-		repos.EmailTemplate,
-		repos.EmailQueue,
-		repos.EmailVerification,
-		repos.PasswordReset,
-		repos.User,
-		auditService,
-		cfg,
-		logger,
-	)
+	// Token, login, MFA and account events go to metrics and the audit log
+	recorder := observability.NewRecorder(auditService, metrics, logger)
+	emailService := services.NewEmailService(repos.EmailTemplate, repos.EmailQueue, cfg, logger, services.WithEmailMetrics(metrics))
 	tenantService := services.NewTenantService(repos, logger)
-	userService := services.NewUserService(repos, logger)
+	userService := services.NewUserService(repos, emailService, cfg.ServerURL, logger)
 	clientService := services.NewClientService(repos, logger)
-	authService := services.NewAuthService(repos, cfg, jwtKeys, logger)
+	registrationService := services.NewRegistrationService(repos, clientService, cfg.ServerURL, logger)
+	authService := services.NewAuthService(repos, cfg, jwtKeys, logger, services.WithTokenEvents(recorder))
 	sessionService := services.NewSessionService(repos.Session, repos.Consent, cfg.SessionDuration, logger)
+
+	// MFA secrets are encrypted at rest with a dedicated key when configured
+	mfaMasterKey := mfa.DeriveKey(cfg.JWTSecret)
+	if cfg.MFAEncryptionKey != "" {
+		if mfaMasterKey, err = mfa.ParseKey(cfg.MFAEncryptionKey); err != nil {
+			logger.Fatalf("Invalid MFA_ENCRYPTION_KEY: %v", err)
+		}
+	} else {
+		logger.Warn("No MFA_ENCRYPTION_KEY set: deriving it from JWT_SECRET; rotating JWT_SECRET will invalidate enrolled authenticators")
+	}
+	mfaKeys, err := mfa.NewKeys(mfaMasterKey)
+	if err != nil {
+		logger.Fatalf("Failed to initialize MFA keys: %v", err)
+	}
+	mfaService := services.NewMFAService(repos, mfaKeys, logger)
 	roleService := services.NewRoleService(repos.Role, repos.Permission, repos.UserRole, repos.RolePermission, auditService, logger)
 	permissionService := services.NewPermissionService(repos.Permission, repos.Role, repos.UserRole, repos.RolePermission, logger)
 
@@ -132,7 +164,7 @@ func main() {
 		}
 	}()
 
-	// Periodically purge expired codes, tokens and SSO sessions
+	// Periodically purge expired codes, tokens, SSO sessions and idempotency keys
 	go func() {
 		ticker := time.NewTicker(15 * time.Minute)
 		defer ticker.Stop()
@@ -149,6 +181,9 @@ func main() {
 				if err := sessionService.CleanupExpiredSessions(rootCtx); err != nil {
 					logger.WithError(err).Error("Failed to clean up expired sessions")
 				}
+				if err := repos.Idempotency.DeleteExpired(rootCtx); err != nil {
+					logger.WithError(err).Error("Failed to clean up expired idempotency keys")
+				}
 			}
 		}
 	}()
@@ -161,6 +196,9 @@ func main() {
 	router := gin.New()
 
 	// Add middleware
+	// Metrics and tracing wrap Recovery so panics are still recorded as 500s
+	router.Use(metrics.HTTPMiddleware())
+	router.Use(observability.TracingMiddleware(middleware.TenantIDKey))
 	router.Use(gin.Logger())
 	router.Use(gin.Recovery())
 	router.Use(middleware.CORS(cfg))
@@ -169,6 +207,7 @@ func main() {
 	tenantDomains := middleware.NewDomainTenantResolver(repos.Tenant, time.Minute)
 	router.Use(middleware.TenantContext(jwtKeys, tenantDomains))
 	router.Use(middleware.RequestID())
+	router.Use(observability.RequestContext(middleware.RequestIDKey))
 
 	// Initialize authorization
 	superAdminIDs, err := parseUserIDs(cfg.RBACSuperAdminUserIDs)
@@ -183,13 +222,16 @@ func main() {
 	// Initialize handlers
 	tenantHandler := handlers.NewTenantHandler(tenantService, logger)
 	userHandler := handlers.NewUserHandler(userService, logger)
+	accountHandler := handlers.NewAccountHandler(cfg, userService, logger).WithRecorder(recorder)
 	clientHandler := handlers.NewClientHandler(clientService, logger)
-	oauthHandler := handlers.NewOAuthHandler(cfg, tenantService, userService, clientService, authService, sessionService, logger)
+	oauthHandler := handlers.NewOAuthHandler(cfg, tenantService, userService, clientService, authService, sessionService, mfaService, logger).WithRecorder(recorder)
+	mfaHandler := handlers.NewMFAHandler(mfaService, logger).WithRecorder(recorder)
+	registrationHandler := handlers.NewRegistrationHandler(registrationService, logger).WithRecorder(recorder)
 	rbacHandler := handlers.NewRBACHandler(roleService, permissionService, auditService, logger)
 	auditHandler := handlers.NewAuditHandler(auditService, logger)
 
 	// Setup routes
-	setupRoutes(cfg, db, redisClient, router, tenantHandler, userHandler, clientHandler, oauthHandler, rbacHandler, auditHandler, authService, authz, jwtKeys)
+	setupRoutes(cfg, db, redisClient, router, repos.Idempotency, tenantHandler, userHandler, accountHandler, mfaHandler, registrationHandler, clientHandler, oauthHandler, rbacHandler, auditHandler, authService, authz, jwtKeys)
 
 	// Create HTTP server
 	server := &http.Server{
@@ -198,6 +240,20 @@ func main() {
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
+	}
+
+	// Metrics get a listener of their own, kept off the public API port
+	var metricsServer *http.Server
+	if cfg.MetricsAddr != "" {
+		metricsMux := http.NewServeMux()
+		metricsMux.Handle("/metrics", metrics.Handler())
+		metricsServer = &http.Server{Addr: cfg.MetricsAddr, Handler: metricsMux, ReadHeaderTimeout: 5 * time.Second}
+		go func() {
+			logger.Infof("Metrics listening on %s", cfg.MetricsAddr)
+			if err := metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				logger.Errorf("Metrics server failed: %v", err)
+			}
+		}()
 	}
 
 	// Start server in a goroutine
@@ -224,6 +280,15 @@ func main() {
 
 	if err := server.Shutdown(ctx); err != nil {
 		logger.Fatalf("Server forced to shutdown: %v", err)
+	}
+	if metricsServer != nil {
+		if err := metricsServer.Shutdown(ctx); err != nil {
+			logger.Warnf("Metrics server shutdown: %v", err)
+		}
+	}
+	// Flush buffered spans
+	if err := shutdownTracing(ctx); err != nil {
+		logger.Warnf("Tracing shutdown: %v", err)
 	}
 
 	logger.Info("Server exited")
@@ -258,8 +323,12 @@ func setupRoutes(
 	db *gorm.DB,
 	redisClient *database.RedisClient,
 	router *gin.Engine,
+	idempotency middleware.IdempotencyStore,
 	tenantHandler *handlers.TenantHandler,
 	userHandler *handlers.UserHandler,
+	accountHandler *handlers.AccountHandler,
+	mfaHandler *handlers.MFAHandler,
+	registrationHandler *handlers.RegistrationHandler,
 	clientHandler *handlers.ClientHandler,
 	oauthHandler *handlers.OAuthHandler,
 	rbacHandler *handlers.RBACHandler,
@@ -304,7 +373,7 @@ func setupRoutes(
 			"db":          dbStatus,
 			"redis":       redisStatus,
 			"timestamp":   time.Now().UTC(),
-			"version":     "1.0.0",
+			"version":     serviceVersion,
 			"environment": cfg.GinMode,
 		})
 	})
@@ -312,9 +381,17 @@ func setupRoutes(
 	// OAuth 2.0 and OpenID Connect endpoints (no versioning per spec)
 	oauthHandler.RegisterRoutes(router.Group(""))
 
+	// Self-service pages opened from account emails
+	accountHandler.RegisterRoutes(router.Group(""))
+
+	// Dynamic client registration (RFC 7591) and client self-management (RFC 7592)
+	registrationHandler.RegisterRoutes(router.Group(""))
+
 	// Management API endpoints (versioned)
 	api := router.Group("/v1")
 	api.Use(middleware.RequireAuth(jwtKeys, authService)) // Require authentication + revocation check for management APIs
+	// POSTs carrying an Idempotency-Key are safe to retry for 24 hours
+	api.Use(middleware.Idempotency(idempotency, 24*time.Hour))
 	{
 		// Every route below adds its own RBAC check via authz
 
@@ -324,8 +401,14 @@ func setupRoutes(
 		// User management
 		userHandler.RegisterRoutes(api.Group("/users"), authz)
 
+		// Second factors: /v1/users/:user_id/mfa/...
+		mfaHandler.RegisterRoutes(api.Group("/users"), authz)
+
 		// Client management
 		clientHandler.RegisterRoutes(api.Group("/clients"), authz)
+
+		// Initial access tokens for dynamic client registration
+		registrationHandler.RegisterManagementRoutes(api, authz)
 
 		// RBAC: /v1/roles, /v1/permissions, /v1/users/:user_id/{roles,permissions}
 		rbacHandler.RegisterRoutes(api, authz)

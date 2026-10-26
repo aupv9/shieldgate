@@ -103,12 +103,13 @@ func (s *authServiceImpl) CreateDeviceAuthorization(ctx context.Context, tenantI
 	}, nil
 }
 
-func (s *authServiceImpl) ApproveDeviceCode(ctx context.Context, tenantID uuid.UUID, userCode string, userID uuid.UUID) error {
+func (s *authServiceImpl) ApproveDeviceCode(ctx context.Context, tenantID uuid.UUID, userCode string, userID uuid.UUID, amr []string) error {
 	return s.resolveDeviceCode(ctx, tenantID, userCode, func(dc *models.DeviceCode) {
 		now := time.Now()
 		dc.Status = models.DeviceCodeApproved
 		dc.UserID = &userID
 		dc.AuthTime = &now
+		dc.AMR = amr
 	})
 }
 
@@ -175,7 +176,7 @@ func (s *authServiceImpl) ExchangeDeviceCode(ctx context.Context, tenantID uuid.
 		if err := s.repos.DeviceCode.Delete(ctx, tenantID, dc.DeviceCode); err != nil {
 			return nil, models.ErrInvalidGrant
 		}
-		tokens, err := s.issueTokens(ctx, tenantID, dc.ClientID, *dc.UserID, dc.Scope, dc.ID, true, true, authContext{authTime: dc.AuthTime})
+		tokens, err := s.issueTokens(ctx, tenantID, dc.ClientID, *dc.UserID, dc.Scope, dc.ID, true, true, authContext{grantType: models.GrantTypeDeviceCode, authTime: dc.AuthTime, amr: dc.AMR})
 		if err != nil {
 			return nil, err
 		}
@@ -261,6 +262,10 @@ func (s *authServiceImpl) ExchangeToken(ctx context.Context, tenantID uuid.UUID,
 		"client_id": client.ClientID,
 		"subject":   subjectClaims.Sub,
 	}).Info("token exchanged")
+	s.emit(ctx, models.TokenEvent{
+		Type: models.TokenEventIssued, TenantID: tenantID, ClientID: client.ID, UserID: userRef(userID),
+		GrantType: models.GrantTypeTokenExchange, Scope: scope, FamilyID: record.FamilyID, Actor: client.ClientID,
+	})
 
 	return &models.TokenExchangeResponse{
 		AccessToken:     accessToken,

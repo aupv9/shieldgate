@@ -405,3 +405,25 @@ func newFakeRepositories() *repo.Repositories {
 		User:         newFakeUserRepo(),
 	}
 }
+
+func (r *fakeAccessTokenRepo) DeleteByClientID(ctx context.Context, tenantID, clientID uuid.UUID) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for k, t := range r.tokens {
+		if t.TenantID == tenantID && t.ClientID == clientID {
+			delete(r.tokens, k)
+		}
+	}
+	return nil
+}
+
+func (r *fakeRefreshTokenRepo) DeleteByClientID(ctx context.Context, tenantID, clientID uuid.UUID) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for k, t := range r.tokens {
+		if t.TenantID == tenantID && t.ClientID == clientID {
+			delete(r.tokens, k)
+		}
+	}
+	return nil
+}

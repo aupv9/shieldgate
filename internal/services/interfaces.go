@@ -69,7 +69,7 @@ type AuthService interface {
 	// Authorization Code Flow
 	// GenerateAuthorizationCode stores nonce and authTime so the ID token
 	// issued on exchange can echo them (OIDC Core §3.1.3.6)
-	GenerateAuthorizationCode(ctx context.Context, tenantID, clientID, userID uuid.UUID, redirectURI, scope, codeChallenge, codeChallengeMethod, nonce string, authTime time.Time) (*models.AuthorizationCode, error)
+	GenerateAuthorizationCode(ctx context.Context, tenantID, clientID, userID uuid.UUID, redirectURI, scope, codeChallenge, codeChallengeMethod, nonce string, authTime time.Time, amr []string) (*models.AuthorizationCode, error)
 	// clientID is the client's internal ID (models.Client.ID), not its public client_id
 	ExchangeAuthorizationCode(ctx context.Context, tenantID uuid.UUID, code, clientID, clientSecret, redirectURI, codeVerifier string) (*models.TokenResponse, error)
 
@@ -92,7 +92,7 @@ type AuthService interface {
 	// the device_code / user_code pair
 	CreateDeviceAuthorization(ctx context.Context, tenantID uuid.UUID, client *models.Client, scope string) (*models.DeviceAuthorizationResponse, error)
 	// ApproveDeviceCode links the user-typed code to an authenticated user
-	ApproveDeviceCode(ctx context.Context, tenantID uuid.UUID, userCode string, userID uuid.UUID) error
+	ApproveDeviceCode(ctx context.Context, tenantID uuid.UUID, userCode string, userID uuid.UUID, amr []string) error
 	// DenyDeviceCode marks the user-typed code as denied by the user
 	DenyDeviceCode(ctx context.Context, tenantID uuid.UUID, userCode string) error
 	// ExchangeDeviceCode is called by the polling device; returns
@@ -136,11 +136,57 @@ type Services struct {
 	Email      EmailService
 }
 
+// RegistrationService implements dynamic client registration (RFC 7591)
+// and client self-management (RFC 7592)
+type RegistrationService interface {
+	// CreateInitialAccessToken issues a token that lets clients register;
+	// its value is returned only here
+	CreateInitialAccessToken(ctx context.Context, tenantID uuid.UUID, createdBy *uuid.UUID, req *models.CreateInitialAccessTokenRequest) (*models.CreatedInitialAccessToken, error)
+	ListInitialAccessTokens(ctx context.Context, tenantID uuid.UUID) ([]*models.InitialAccessToken, error)
+	RevokeInitialAccessToken(ctx context.Context, tenantID, id uuid.UUID) error
+
+	// Register creates a client; errors are *models.RegistrationError for
+	// bad metadata and models.ErrInvalidToken for a bad initial access token
+	Register(ctx context.Context, tenantID uuid.UUID, initialAccessToken string, meta *models.ClientMetadata) (*models.ClientRegistrationResponse, error)
+	// Read, Update and Delete authenticate with the registration access
+	// token returned by Register
+	Read(ctx context.Context, tenantID uuid.UUID, clientID, registrationToken string) (*models.ClientRegistrationResponse, error)
+	Update(ctx context.Context, tenantID uuid.UUID, clientID, registrationToken string, meta *models.ClientMetadata) (*models.ClientRegistrationResponse, error)
+	Delete(ctx context.Context, tenantID uuid.UUID, clientID, registrationToken string) error
+}
+
+// TokenEventSink receives token events (issuance, revocation, replay
+// detection) for metrics and the audit log; observability.Recorder
+// implements it. Implementations must not fail the token operation.
+type TokenEventSink interface {
+	TokenEvent(ctx context.Context, ev models.TokenEvent)
+}
+
+// MFAService manages TOTP second factors and recovery codes
+type MFAService interface {
+	Status(ctx context.Context, tenantID, userID uuid.UUID) (*models.MFAStatus, error)
+	// IsEnabled reports whether the user must pass a second factor
+	IsEnabled(ctx context.Context, tenantID, userID uuid.UUID) (bool, error)
+	// BeginTOTPEnrollment creates a pending authenticator and returns its
+	// secret, shown once; it fails if one is already enabled
+	BeginTOTPEnrollment(ctx context.Context, tenantID, userID uuid.UUID) (*models.TOTPEnrollment, error)
+	// ConfirmTOTPEnrollment enables the pending authenticator once the user
+	// proves it works, ends the user's sessions and returns recovery codes
+	ConfirmTOTPEnrollment(ctx context.Context, tenantID, userID uuid.UUID, code string) ([]string, error)
+	// Verify checks a TOTP or recovery code and returns the method used
+	// (models.MFAMethodTOTP or models.MFAMethodRecoveryCode)
+	Verify(ctx context.Context, tenantID, userID uuid.UUID, code string) (string, error)
+	// RegenerateRecoveryCodes replaces all recovery codes
+	RegenerateRecoveryCodes(ctx context.Context, tenantID, userID uuid.UUID) ([]string, error)
+	// Disable removes the second factor and ends the user's sessions
+	Disable(ctx context.Context, tenantID, userID uuid.UUID) error
+}
+
 // SessionService manages single sign-on sessions and remembered consent
 type SessionService interface {
 	// CreateSession starts a session for a user who just authenticated and
 	// returns the token to place in the browser cookie
-	CreateSession(ctx context.Context, tenantID, userID uuid.UUID, ipAddress, userAgent string) (string, *models.Session, error)
+	CreateSession(ctx context.Context, tenantID, userID uuid.UUID, amr []string, ipAddress, userAgent string) (string, *models.Session, error)
 	// GetSession returns the live session for a cookie token, or
 	// models.ErrSessionNotFound if it is unknown or expired
 	GetSession(ctx context.Context, tenantID uuid.UUID, token string) (*models.Session, error)
@@ -221,12 +267,10 @@ type EmailService interface {
 	ProcessQueue(ctx context.Context) error
 	GetQueueStatus(ctx context.Context, tenantID uuid.UUID) (map[string]int, error)
 	RetryFailedEmails(ctx context.Context, tenantID uuid.UUID, maxAttempts int) error
+}
 
-	// Verification Emails
-	SendVerificationEmail(ctx context.Context, tenantID, userID uuid.UUID) error
-	VerifyEmail(ctx context.Context, tenantID uuid.UUID, code string) (*models.User, error)
-
-	// Password Reset Emails
-	SendPasswordResetEmail(ctx context.Context, tenantID uuid.UUID, email string) error
-	ResetPassword(ctx context.Context, tenantID uuid.UUID, token, newPassword string) (*models.User, error)
+// TemplateEmailSender queues an email rendered from a template. EmailService
+// satisfies it; UserService depends only on this for account emails.
+type TemplateEmailSender interface {
+	SendTemplateEmail(ctx context.Context, tenantID uuid.UUID, toEmail, toName, templateName string, variables map[string]string, priority int) error
 }

@@ -1,5 +1,6 @@
 # Multi-stage build for production optimization
-FROM golang:1.21-alpine AS builder
+# Matches the toolchain pinned in go.mod
+FROM golang:1.24-alpine AS builder
 
 # Install build dependencies
 RUN apk add --no-cache git ca-certificates tzdata

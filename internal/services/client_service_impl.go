@@ -66,10 +66,11 @@ func (s *clientServiceImpl) Create(ctx context.Context, tenantID uuid.UUID, req 
 		Name:         req.Name,
 		RedirectURIs: models.StringArray(req.RedirectURIs),
 		// Non-nil so the NOT NULL jsonb column gets [] rather than NULL
-		PostLogoutRedirectURIs: append(models.StringArray{}, req.PostLogoutRedirectURIs...),
-		GrantTypes:             models.StringArray(req.GrantTypes),
-		Scopes:                 models.StringArray(req.Scopes),
-		IsPublic:               req.IsPublic,
+		PostLogoutRedirectURIs:  append(models.StringArray{}, req.PostLogoutRedirectURIs...),
+		GrantTypes:              models.StringArray(req.GrantTypes),
+		Scopes:                  models.StringArray(req.Scopes),
+		IsPublic:                req.IsPublic,
+		TokenEndpointAuthMethod: tokenEndpointAuthMethodFor(req.IsPublic),
 	}
 
 	if err := s.repos.Client.Create(ctx, client); err != nil {
@@ -139,6 +140,7 @@ func (s *clientServiceImpl) Update(ctx context.Context, tenantID, clientID uuid.
 	var plainSecret string
 	if req.IsPublic != nil {
 		client.IsPublic = *req.IsPublic
+		client.TokenEndpointAuthMethod = tokenEndpointAuthMethodFor(client.IsPublic)
 		// If changing to confidential client, generate secret
 		if !*req.IsPublic && client.ClientSecret == "" {
 			var err error
@@ -181,6 +183,14 @@ func (s *clientServiceImpl) Delete(ctx context.Context, tenantID, clientID uuid.
 	if err := s.repos.Client.Delete(ctx, tenantID, clientID); err != nil {
 		s.logger.WithError(err).WithField("client_id", clientID).Error("failed to delete client")
 		return fmt.Errorf("failed to delete client: %w", err)
+	}
+	// Tokens of a deleted client must stop working, not linger until
+	// expiry (RFC 7592 §2.3)
+	if err := s.repos.AccessToken.DeleteByClientID(ctx, tenantID, clientID); err != nil {
+		return fmt.Errorf("failed to revoke client access tokens: %w", err)
+	}
+	if err := s.repos.RefreshToken.DeleteByClientID(ctx, tenantID, clientID); err != nil {
+		return fmt.Errorf("failed to revoke client refresh tokens: %w", err)
 	}
 
 	s.logger.WithFields(logrus.Fields{
@@ -260,6 +270,15 @@ func (s *clientServiceImpl) ValidateRedirectURI(ctx context.Context, client *mod
 }
 
 // Helper functions
+
+// tokenEndpointAuthMethodFor returns the registration metadata value for a
+// client type: public clients do not authenticate
+func tokenEndpointAuthMethodFor(isPublic bool) string {
+	if isPublic {
+		return models.TokenEndpointAuthNone
+	}
+	return models.TokenEndpointAuthClientSecretBasic
+}
 
 func generateClientID() string {
 	// Generate a client ID with prefix

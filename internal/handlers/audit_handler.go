@@ -259,6 +259,12 @@ func (h *AuditHandler) GetSecurityEvents(c *gin.Context) {
 		models.AuditActionPermissionRevoked: true,
 		models.AuditActionRoleAssigned:      true,
 		models.AuditActionRoleRevoked:       true,
+
+		models.AuditActionTokenReuseDetected: true,
+		models.AuditActionMFADisabled:        true,
+		models.AuditActionMFAReset:           true,
+		models.AuditActionMFAFailed:          true,
+		models.AuditActionPasswordReset:      true,
 	}
 
 	filteredItems := make([]interface{}, 0)

@@ -35,7 +35,7 @@ func NewSessionService(sessions repo.SessionRepository, consents repo.ConsentRep
 	}
 }
 
-func (s *sessionServiceImpl) CreateSession(ctx context.Context, tenantID, userID uuid.UUID, ipAddress, userAgent string) (string, *models.Session, error) {
+func (s *sessionServiceImpl) CreateSession(ctx context.Context, tenantID, userID uuid.UUID, amr []string, ipAddress, userAgent string) (string, *models.Session, error) {
 	token, err := randomToken(sessionTokenBytes)
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to generate session token: %w", err)
@@ -48,6 +48,7 @@ func (s *sessionServiceImpl) CreateSession(ctx context.Context, tenantID, userID
 		UserID:    userID,
 		TokenHash: hashToken(token),
 		AuthTime:  now,
+		AMR:       append(models.StringArray{}, amr...),
 		IPAddress: ipAddress,
 		UserAgent: userAgent,
 		ExpiresAt: now.Add(s.duration),
