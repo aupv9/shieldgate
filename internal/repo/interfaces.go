@@ -68,8 +68,9 @@ type RefreshTokenRepository interface {
 	Create(ctx context.Context, token *models.RefreshToken) error
 	GetByToken(ctx context.Context, tenantID uuid.UUID, token string) (*models.RefreshToken, error)
 	// Revoke marks a token as revoked without deleting it, so replays of a
-	// rotated token can be detected
-	Revoke(ctx context.Context, tenantID uuid.UUID, token string) error
+	// rotated token can be detected. It is atomic: revoked reports whether
+	// this call revoked the token, so of concurrent calls exactly one wins.
+	Revoke(ctx context.Context, tenantID uuid.UUID, token string) (revoked bool, err error)
 	Delete(ctx context.Context, tenantID uuid.UUID, token string) error
 	DeleteExpired(ctx context.Context) error
 	DeleteByUserID(ctx context.Context, tenantID, userID uuid.UUID) error

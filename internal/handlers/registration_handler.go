@@ -57,7 +57,8 @@ func (h *RegistrationHandler) RegisterManagementRoutes(router *gin.RouterGroup, 
 	tokens.DELETE("/:id", authz.Require("client", "delete"), h.RevokeInitialAccessToken)
 }
 
-// noStore keeps credentials in responses out of caches (RFC 7591 §3.2.1)
+// noStore keeps credentials in responses out of caches (RFC 6749 §5.1,
+// RFC 7591 §3.2.1)
 func noStore(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
 	c.Header("Pragma", "no-cache")
