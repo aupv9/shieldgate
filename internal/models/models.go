@@ -447,12 +447,17 @@ type TokenResponse struct {
 
 // IntrospectionResponse represents the OAuth 2.0 token introspection response
 type IntrospectionResponse struct {
-	Active   bool   `json:"active"`
-	Scope    string `json:"scope,omitempty"`
-	ClientID string `json:"client_id,omitempty"`
-	UserID   string `json:"user_id,omitempty"`
-	Exp      int64  `json:"exp,omitempty"`
-	Iat      int64  `json:"iat,omitempty"`
+	Active bool   `json:"active"`
+	Scope  string `json:"scope,omitempty"`
+	// ClientID is the public client_id the token was issued to
+	ClientID  string `json:"client_id,omitempty"`
+	TokenType string `json:"token_type,omitempty"`
+	Sub       string `json:"sub,omitempty"`
+	// UserID duplicates sub for existing callers
+	UserID string `json:"user_id,omitempty"`
+	Exp    int64  `json:"exp,omitempty"`
+	Iat    int64  `json:"iat,omitempty"`
+	Iss    string `json:"iss,omitempty"`
 }
 
 // UserInfo represents OpenID Connect UserInfo response
@@ -755,6 +760,10 @@ type AuthorizeRequest struct {
 	// MaxAge is the allowable elapsed time in seconds since the user last
 	// authenticated; empty when not requested
 	MaxAge string `form:"max_age"`
+	// Request and RequestURI pass the request as a JWT (OIDC Core §6),
+	// which is not supported; they are only read to reject the request
+	Request    string `form:"request"`
+	RequestURI string `form:"request_uri"`
 }
 
 // TokenRequest represents an OAuth token request

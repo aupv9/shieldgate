@@ -1,0 +1,89 @@
+{
+    "alias": "shieldgate",
+    "description": "ShieldGate OIDC basic (scripts/conformance/oidf)",
+    "server": {
+        "discoveryUrl": "{ISSUER}/.well-known/openid-configuration"
+    },
+    "client": {
+        "client_id": "conformance-rp",
+        "client_secret": "conformance-client-secret-0123456789",
+        "scope": "openid email profile"
+    },
+    "client2": {
+        "client_id": "conformance-rp-2",
+        "client_secret": "conformance-client-secret-0123456789",
+        "scope": "openid email profile"
+    },
+    "client_secret_post": {
+        "client_id": "conformance-rp-2",
+        "client_secret": "conformance-client-secret-0123456789",
+        "scope": "openid email profile"
+    },
+    "browser": [
+        {
+            "match": "{ISSUER}/oauth/authorize*",
+            "tasks": [
+                {
+                    "task": "Login",
+                    "optional": true,
+                    "match": "{ISSUER}/oauth/authorize*",
+                    "commands": [
+                        ["wait", "id", "loginForm", 10, "(?s).*Password.*", "update-image-placeholder-optional"],
+                        ["text", "id", "username", "conformance@example.com"],
+                        ["text", "id", "password", "Conformance-Passw0rd!"],
+                        ["click", "id", "loginBtn"]
+                    ]
+                },
+                {
+                    "task": "Consent",
+                    "optional": true,
+                    "match": "{ISSUER}/oauth/login*",
+                    "commands": [
+                        ["click", "css", "button.allow"]
+                    ]
+                },
+                {
+                    "task": "Verify Complete",
+                    "match": "*/test/*/callback*",
+                    "commands": [
+                        ["wait", "id", "submission_complete", 10]
+                    ]
+                }
+            ]
+        }
+    ],
+    "override": {
+        "oidcc-ensure-registered-redirect-uri": {
+            "browser": [
+                {
+                    "match": "{ISSUER}/oauth/authorize*",
+                    "tasks": [
+                        {
+                            "task": "Expect redirect_uri error page",
+                            "match": "{ISSUER}/oauth/authorize*",
+                            "commands": [
+                                ["wait", "css", ".error-description", 10, "(?i).*redirect.*", "update-image-placeholder"]
+                            ]
+                        }
+                    ]
+                }
+            ]
+        },
+        "oidcc-ensure-request-object-with-redirect-uri": {
+            "browser": [
+                {
+                    "match": "{ISSUER}/oauth/authorize*",
+                    "tasks": [
+                        {
+                            "task": "Expect redirect_uri error page",
+                            "match": "{ISSUER}/oauth/authorize*",
+                            "commands": [
+                                ["wait", "css", ".error-description", 10, "(?i).*redirect.*", "update-image-placeholder"]
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+}

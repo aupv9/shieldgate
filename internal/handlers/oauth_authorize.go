@@ -64,6 +64,8 @@ func readAuthorizeRequest(get func(string) string) *models.AuthorizeRequest {
 		Nonce:               get("nonce"),
 		Prompt:              get("prompt"),
 		MaxAge:              get("max_age"),
+		Request:             get("request"),
+		RequestURI:          get("request_uri"),
 	}
 }
 
@@ -92,6 +94,14 @@ func (h *OAuthHandler) validateAuthorizationRequest(c *gin.Context, tenantID uui
 		return nil, false
 	}
 
+	// Request objects are not supported (discovery says so); ignoring one
+	// would process a request other than the one the client signed
+	if req.Request != "" {
+		return fail("request_not_supported", "The request parameter is not supported")
+	}
+	if req.RequestURI != "" {
+		return fail("request_uri_not_supported", "The request_uri parameter is not supported")
+	}
 	if err := req.Validate(); err != nil {
 		return fail("unsupported_response_type", err.Error())
 	}
@@ -141,9 +151,9 @@ func (h *OAuthHandler) validateAuthorizationRequest(c *gin.Context, tenantID uui
 	}, true
 }
 
-// HandleAuthorize handles OAuth authorization requests (GET). With a live
-// session the user skips the login page; consent is asked only for scopes
-// not granted before.
+// HandleAuthorize handles OAuth authorization requests, sent with GET or
+// as a form POST (OIDC Core §3.1.2.1). With a live session the user skips
+// the login page; consent is asked only for scopes not granted before.
 func (h *OAuthHandler) HandleAuthorize(c *gin.Context) {
 	tenantID, err := middleware.GetTenantID(c)
 	if err != nil {
@@ -152,7 +162,11 @@ func (h *OAuthHandler) HandleAuthorize(c *gin.Context) {
 		return
 	}
 
-	ar, ok := h.validateAuthorizationRequest(c, tenantID, readAuthorizeRequest(c.Query))
+	get := c.Query
+	if c.Request.Method == http.MethodPost {
+		get = c.PostForm
+	}
+	ar, ok := h.validateAuthorizationRequest(c, tenantID, readAuthorizeRequest(get))
 	if !ok {
 		return
 	}

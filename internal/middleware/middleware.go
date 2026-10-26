@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -349,12 +350,17 @@ func CORS(cfg *config.Config) gin.HandlerFunc {
 
 // RateLimit middleware implements per-IP rate limiting via Redis
 func RateLimit(cfg *config.Config) gin.HandlerFunc {
+	// Redis is optional; say once that rate limiting is off rather than on
+	// every request (under load that was most of the server's log output)
+	var noRedis sync.Once
 	return func(c *gin.Context) {
 		clientIP := getClientIP(c)
 
 		redisClient, exists := c.Get("redis")
 		if !exists {
-			logrus.Warn("Redis not available, skipping rate limiting")
+			noRedis.Do(func() {
+				logrus.Warn("Redis not available, rate limiting is disabled")
+			})
 			c.Next()
 			return
 		}

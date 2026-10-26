@@ -54,7 +54,7 @@ func main() {
 
 	// Initialize database
 	logger.Info("Connecting to database...")
-	db, err := database.Initialize(cfg.DatabaseURL)
+	db, err := database.Initialize(cfg.DatabaseURL, logger.GetLevel())
 	if err != nil {
 		logger.Fatalf("Failed to initialize database: %v", err)
 	}

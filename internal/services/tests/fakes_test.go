@@ -223,14 +223,15 @@ func (r *fakeRefreshTokenRepo) GetByToken(ctx context.Context, tenantID uuid.UUI
 	return nil, models.ErrRefreshTokenNotFound
 }
 
-func (r *fakeRefreshTokenRepo) Revoke(ctx context.Context, tenantID uuid.UUID, token string) error {
+func (r *fakeRefreshTokenRepo) Revoke(ctx context.Context, tenantID uuid.UUID, token string) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if t, ok := r.tokens[token]; ok && t.TenantID == tenantID && t.RevokedAt == nil {
 		now := time.Now()
 		t.RevokedAt = &now
+		return true, nil
 	}
-	return nil
+	return false, nil
 }
 
 func (r *fakeRefreshTokenRepo) Delete(ctx context.Context, tenantID uuid.UUID, token string) error {

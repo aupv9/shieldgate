@@ -1,0 +1,54 @@
+# OpenID Foundation conformance suite (https://gitlab.com/openid/conformance-suite),
+# run locally by scripts/conformance/oidf/run.sh. Images are pinned by
+# digest: suite version 5.3.3 (revision f237360).
+#
+# The suite is served at https://localhost.emobix.co.uk:8443 (a public DNS
+# name for 127.0.0.1) with a self-signed certificate. ShieldGate runs on the
+# host; inside the suite's network it is https://shieldgate.test, a TLS
+# proxy (Caddy, internal CA) in front of host.docker.internal:SHIELDGATE_PORT,
+# because OIDC Discovery requires https endpoints.
+name: shieldgate-oidf
+services:
+  mongodb:
+    image: mongo:6.0.13
+    volumes:
+      - mongo:/data/db
+  nginx:
+    image: registry.gitlab.com/openid/conformance-suite/nginx@sha256:10b707666dd5bdda2dde9c34da3ebd4589f0b28580e6c9575d1b379ebd373bca
+    ports:
+      - "127.0.0.1:8443:8443"
+      - "127.0.0.1:8444:8444"
+    networks:
+      default:
+        aliases:
+          # the suite's own requests to its public name must reach nginx
+          - localhost.emobix.co.uk
+    depends_on:
+      - server
+  server:
+    image: registry.gitlab.com/openid/conformance-suite@sha256:7a7a73cff3a2594524537b8a9c4d9836eeb3c16dc0a0c96aeb2ce705eeed5d2e
+    environment:
+      BASE_URL: https://localhost.emobix.co.uk:8443
+      BASE_MTLS_URL: https://localhost.emobix.co.uk:8444
+      MONGODB_HOST: mongodb
+      SPRING_PROFILES_ACTIVE: dev
+      # Placeholders for the suite's own sign-in, which dev mode does not use
+      OIDC_GOOGLE_CLIENTID: google-client
+      OIDC_GOOGLE_SECRET: google-secret
+      OIDC_GITLAB_CLIENTID: gitlab-client
+      OIDC_GITLAB_SECRET: gitlab-secret
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - mongodb
+  shieldgate-tls:
+    image: caddy:2.8.4
+    command: caddy reverse-proxy --from shieldgate.test --to host.docker.internal:${SHIELDGATE_PORT:-18101} --internal-certs
+    networks:
+      default:
+        aliases:
+          - shieldgate.test
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+volumes:
+  mongo:

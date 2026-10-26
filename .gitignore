@@ -1,2 +1,5 @@
 # Generated signing keys (make jwt-keys)
 /secrets/
+
+# k6 load test summaries (scripts/load/run.sh)
+tests/load/results/
