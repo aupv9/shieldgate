@@ -51,7 +51,7 @@ func newHandlerFixture() *handlerFixture {
 		f.clientService,
 		f.authService,
 		preConsented(),
-		logger,
+		nil, logger,
 	)
 
 	f.router = gin.New()

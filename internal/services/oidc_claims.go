@@ -19,7 +19,11 @@ const (
 // stored with refresh tokens so ID tokens issued on refresh keep the original
 // auth_time (OIDC Core §12.2).
 type authContext struct {
-	authTime *time.Time
+	// grantType is reported in token events
+	grantType string
+	authTime  *time.Time
+	// amr lists the authentication methods (RFC 8176); kept on refresh
+	amr []string
 	// nonce is echoed only in the ID token of the initial code exchange
 	nonce string
 }

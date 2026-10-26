@@ -73,3 +73,11 @@ func (r *accessTokenRepository) DeleteByUserID(ctx context.Context, tenantID, us
 	}
 	return nil
 }
+
+func (r *accessTokenRepository) DeleteByClientID(ctx context.Context, tenantID, clientID uuid.UUID) error {
+	if err := r.db.WithContext(ctx).
+		Delete(&models.AccessToken{}, "tenant_id = ? AND client_id = ?", tenantID, clientID).Error; err != nil {
+		return fmt.Errorf("failed to delete access tokens by client ID: %w", err)
+	}
+	return nil
+}

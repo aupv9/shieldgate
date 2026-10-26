@@ -42,12 +42,12 @@ func newRevocationFixture(t *testing.T) *revocationFixture {
 		PasswordHash: string(hash), Status: models.UserStatusActive,
 	}
 	require.NoError(t, repos.User.Create(ctx, user))
-	_, _, err = sessions.CreateSession(ctx, user.TenantID, user.ID, "", "")
+	_, _, err = sessions.CreateSession(ctx, user.TenantID, user.ID, nil, "", "")
 	require.NoError(t, err)
 
 	return &revocationFixture{
 		ctx:      ctx,
-		users:    services.NewUserService(repos, quietLogger()),
+		users:    services.NewUserService(repos, nil, "https://auth.example", quietLogger()),
 		sessions: sessions,
 		repo:     sessionRepo,
 		user:     user,

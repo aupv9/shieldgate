@@ -10,6 +10,7 @@ import (
 
 	"shieldgate/internal/middleware"
 	"shieldgate/internal/models"
+	"shieldgate/internal/observability"
 	"shieldgate/internal/services"
 
 	"github.com/gin-gonic/gin"
@@ -219,15 +220,37 @@ func (h *OAuthHandler) HandleDeviceVerification(c *gin.Context) {
 	user, err := h.userService.Authenticate(c.Request.Context(), tenantID, c.PostForm("username"), c.PostForm("password"))
 	if err != nil {
 		h.logger.WithError(err).WithField("tenant_id", tenantID).Warn("authentication failed on device verification")
+		h.recordLoginFailure(c, tenantID, mfaPurposeDevice, c.PostForm("username"), err)
 		h.renderDevicePage(c, tenant, userCode, "Invalid email or password", "")
 		return
 	}
 
-	// Apply the decision
-	if c.PostForm("action") == "deny" {
+	required, err := h.mfaRequired(c.Request.Context(), tenantID, user.ID)
+	if err != nil {
+		h.logger.WithError(err).Error("failed to check MFA enrollment")
+		h.renderDevicePage(c, tenant, userCode, "Something went wrong — please try again", "")
+		return
+	}
+	if required {
+		h.record(c, observability.Event{Name: "login", Result: "mfa_required"})
+		h.startMFA(c, tenantID, user.ID, mfaPurposeDevice, "/oauth/device/mfa", gin.H{
+			"user_code": userCode,
+			"action":    c.PostForm("action"),
+		})
+		return
+	}
+
+	h.applyDeviceDecision(c, tenant, tenantID, user.ID, userCode, c.PostForm("action"), []string{services.AMRPassword})
+}
+
+// applyDeviceDecision approves or denies the device code for an
+// authenticated user
+func (h *OAuthHandler) applyDeviceDecision(c *gin.Context, tenant *models.Tenant, tenantID, userID uuid.UUID, userCode, action string, amr []string) {
+	var err error
+	if action == "deny" {
 		err = h.authService.DenyDeviceCode(c.Request.Context(), tenantID, userCode)
 	} else {
-		err = h.authService.ApproveDeviceCode(c.Request.Context(), tenantID, userCode, user.ID)
+		err = h.authService.ApproveDeviceCode(c.Request.Context(), tenantID, userCode, userID, amr)
 	}
 	if err != nil {
 		message := "Code not found — check the code and try again"
@@ -239,14 +262,20 @@ func (h *OAuthHandler) HandleDeviceVerification(c *gin.Context) {
 	}
 
 	result := "Device approved — you can return to your device now"
-	if c.PostForm("action") == "deny" {
-		result = "Device denied — the sign-in request was rejected"
+	event := observability.Event{
+		Action: models.AuditActionDeviceApproved, TenantID: tenantID, UserID: &userID, Success: true,
+		Metadata: map[string]interface{}{"amr": amr}, Name: "device", Result: "approved",
 	}
+	if action == "deny" {
+		result = "Device denied — the sign-in request was rejected"
+		event.Action, event.Result = models.AuditActionDeviceDenied, "denied"
+	}
+	h.record(c, event)
 
 	h.logger.WithFields(logrus.Fields{
 		"tenant_id": tenantID,
-		"user_id":   user.ID,
-		"action":    c.PostForm("action"),
+		"user_id":   userID,
+		"action":    action,
 	}).Info("device verification completed")
 
 	h.renderDevicePage(c, tenant, "", "", result)

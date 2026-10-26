@@ -174,8 +174,8 @@ type MockAuthService struct {
 	mock.Mock
 }
 
-func (m *MockAuthService) GenerateAuthorizationCode(ctx context.Context, tenantID, clientID, userID uuid.UUID, redirectURI, scope, codeChallenge, codeChallengeMethod, nonce string, authTime time.Time) (*models.AuthorizationCode, error) {
-	args := m.Called(ctx, tenantID, clientID, userID, redirectURI, scope, codeChallenge, codeChallengeMethod, nonce, authTime)
+func (m *MockAuthService) GenerateAuthorizationCode(ctx context.Context, tenantID, clientID, userID uuid.UUID, redirectURI, scope, codeChallenge, codeChallengeMethod, nonce string, authTime time.Time, amr []string) (*models.AuthorizationCode, error) {
+	args := m.Called(ctx, tenantID, clientID, userID, redirectURI, scope, codeChallenge, codeChallengeMethod, nonce, authTime, amr)
 	return args.Get(0).(*models.AuthorizationCode), args.Error(1)
 }
 
@@ -197,8 +197,8 @@ func (m *MockAuthService) CreateDeviceAuthorization(ctx context.Context, tenantI
 	return args.Get(0).(*models.DeviceAuthorizationResponse), args.Error(1)
 }
 
-func (m *MockAuthService) ApproveDeviceCode(ctx context.Context, tenantID uuid.UUID, userCode string, userID uuid.UUID) error {
-	args := m.Called(ctx, tenantID, userCode, userID)
+func (m *MockAuthService) ApproveDeviceCode(ctx context.Context, tenantID uuid.UUID, userCode string, userID uuid.UUID, amr []string) error {
+	args := m.Called(ctx, tenantID, userCode, userID, amr)
 	return args.Error(0)
 }
 
@@ -308,7 +308,7 @@ func TestOAuthHandler_HandleAuthorize_Success(t *testing.T) {
 		mockClientService,
 		mockAuthService,
 		preConsented(),
-		logger,
+		nil, logger,
 	)
 
 	// Setup test data
@@ -387,7 +387,7 @@ func TestOAuthHandler_HandleLogin_Success(t *testing.T) {
 		mockClientService,
 		mockAuthService,
 		preConsented(),
-		logger,
+		nil, logger,
 	)
 
 	// Setup test data
@@ -430,7 +430,7 @@ func TestOAuthHandler_HandleLogin_Success(t *testing.T) {
 	mockClientService.On("GetByClientID", mock.Anything, tenantID, clientID).Return(client, nil)
 	mockClientService.On("ValidateRedirectURI", mock.Anything, mock.AnythingOfType("*models.Client"), redirectURI).Return(nil)
 	mockTenantService.On("GetByID", mock.Anything, tenantID).Return(tenant, nil)
-	mockAuthService.On("GenerateAuthorizationCode", mock.Anything, tenantID, clientUUID, userID, redirectURI, "read", "test-challenge", "S256", "", mock.AnythingOfType("time.Time")).Return(authCode, nil)
+	mockAuthService.On("GenerateAuthorizationCode", mock.Anything, tenantID, clientUUID, userID, redirectURI, "read", "test-challenge", "S256", "", mock.AnythingOfType("time.Time"), mock.Anything).Return(authCode, nil)
 
 	// Setup router (templates needed for the authorize step that issues the CSRF token)
 	router := gin.New()
@@ -509,7 +509,7 @@ func TestOAuthHandler_HandleLogin_MissingCSRFToken_Rejected(t *testing.T) {
 		mockClientService,
 		mockAuthService,
 		preConsented(),
-		logger,
+		nil, logger,
 	)
 
 	tenantID := uuid.New()
@@ -540,7 +540,7 @@ func TestOAuthHandler_HandleLogin_MissingCSRFToken_Rejected(t *testing.T) {
 	// Without a CSRF token no credentials are checked and no code is issued
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	mockUserService.AssertNotCalled(t, "Authenticate", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
-	mockAuthService.AssertNotCalled(t, "GenerateAuthorizationCode", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+	mockAuthService.AssertNotCalled(t, "GenerateAuthorizationCode", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 }
 
 // extractCSRFToken pulls the hidden csrf_token field out of the rendered login page
@@ -582,7 +582,7 @@ func TestOAuthHandler_HandleToken_AuthorizationCodeGrant_Success(t *testing.T) {
 		mockClientService,
 		mockAuthService,
 		preConsented(),
-		logger,
+		nil, logger,
 	)
 
 	// Setup test data

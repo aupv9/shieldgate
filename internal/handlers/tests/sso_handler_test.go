@@ -23,6 +23,7 @@ import (
 	"shieldgate/internal/handlers"
 	"shieldgate/internal/middleware"
 	"shieldgate/internal/models"
+	"shieldgate/internal/observability"
 	"shieldgate/tests/utils"
 )
 
@@ -41,9 +42,14 @@ type ssoFixture struct {
 	store    *sessionStore
 	auth     *MockAuthService
 	users    *MockUserService
+	clients  *MockClientService
 	router   *gin.Engine
-	// authTimes records the auth_time passed for each issued code
+	// authTimes and amrs record what was passed for each issued code
 	authTimes []time.Time
+	amrs      [][]string
+	mfa       *fakeMFAService
+	audit     *fakeAuditLog
+	metrics   *observability.Metrics
 }
 
 func newSSOFixture(t *testing.T) *ssoFixture {
@@ -63,7 +69,7 @@ func newSSOFixture(t *testing.T) *ssoFixture {
 	}
 
 	tenants, users, clients := new(MockTenantService), new(MockUserService), new(MockClientService)
-	f.users = users
+	f.users, f.clients = users, clients
 	tenants.On("GetByID", mock.Anything, f.tenantID).Return(&models.Tenant{ID: f.tenantID, Name: "T"}, nil)
 	users.On("Authenticate", mock.Anything, f.tenantID, ssoEmail, ssoPassword).Return(f.user, nil)
 	users.On("Authenticate", mock.Anything, f.tenantID, mock.Anything, mock.Anything).Return(nil, models.ErrInvalidCredentials)
@@ -73,11 +79,17 @@ func newSSOFixture(t *testing.T) *ssoFixture {
 	clients.On("ValidateRedirectURI", mock.Anything, f.client, ssoRedirectURI).Return(nil)
 	clients.On("ValidateRedirectURI", mock.Anything, f.client, mock.Anything).Return(errors.New("not registered"))
 	f.auth.On("GenerateAuthorizationCode", mock.Anything, f.tenantID, f.client.ID, f.user.ID, ssoRedirectURI,
-		mock.Anything, "", "", mock.Anything, mock.AnythingOfType("time.Time")).
-		Run(func(args mock.Arguments) { f.authTimes = append(f.authTimes, args.Get(9).(time.Time)) }).
+		mock.Anything, "", "", mock.Anything, mock.AnythingOfType("time.Time"), mock.Anything).
+		Run(func(args mock.Arguments) {
+			f.authTimes = append(f.authTimes, args.Get(9).(time.Time))
+			f.amrs = append(f.amrs, args.Get(10).([]string))
+		}).
 		Return(&models.AuthorizationCode{Code: "the-code"}, nil)
 
-	handler := handlers.NewOAuthHandler(utils.CreateTestConfig(), tenants, users, clients, f.auth, f.store, logger)
+	f.mfa = &fakeMFAService{}
+	f.audit, f.metrics = &fakeAuditLog{}, observability.NewMetrics()
+	handler := handlers.NewOAuthHandler(utils.CreateTestConfig(), tenants, users, clients, f.auth, f.store, f.mfa, logger).
+		WithRecorder(observability.NewRecorder(f.audit, f.metrics, logger))
 	f.router = gin.New()
 	f.router.SetFuncMap(template.FuncMap{
 		"contains": func(s, substr string) bool { return strings.Contains(s, substr) },

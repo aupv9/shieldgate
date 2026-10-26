@@ -60,6 +60,7 @@ type AccessTokenRepository interface {
 	DeleteExpired(ctx context.Context) error
 	DeleteByUserID(ctx context.Context, tenantID, userID uuid.UUID) error
 	DeleteByFamilyID(ctx context.Context, tenantID, familyID uuid.UUID) error
+	DeleteByClientID(ctx context.Context, tenantID, clientID uuid.UUID) error
 }
 
 // RefreshTokenRepository defines the interface for refresh token data operations
@@ -73,6 +74,7 @@ type RefreshTokenRepository interface {
 	DeleteExpired(ctx context.Context) error
 	DeleteByUserID(ctx context.Context, tenantID, userID uuid.UUID) error
 	DeleteByFamilyID(ctx context.Context, tenantID, familyID uuid.UUID) error
+	DeleteByClientID(ctx context.Context, tenantID, clientID uuid.UUID) error
 }
 
 // DeviceCodeRepository defines the interface for device authorization grant
@@ -106,6 +108,65 @@ type Repositories struct {
 	EmailQueue        EmailQueueRepository
 	EmailVerification EmailVerificationRepository
 	PasswordReset     PasswordResetRepository
+	Idempotency       IdempotencyRepository
+	MFA               MFARepository
+	InitialAccess     InitialAccessTokenRepository
+}
+
+// InitialAccessTokenRepository stores registration initial access tokens
+type InitialAccessTokenRepository interface {
+	Create(ctx context.Context, token *models.InitialAccessToken) error
+	// GetByHash returns the token with that hash, live or not, or
+	// models.ErrInitialAccessTokenNotFound
+	GetByHash(ctx context.Context, tenantID uuid.UUID, tokenHash string) (*models.InitialAccessToken, error)
+	// Consume counts one use of a live token (unrevoked, unexpired, with
+	// uses left) atomically and returns it, or
+	// models.ErrInitialAccessTokenNotFound
+	Consume(ctx context.Context, tenantID uuid.UUID, tokenHash string) (*models.InitialAccessToken, error)
+	List(ctx context.Context, tenantID uuid.UUID) ([]*models.InitialAccessToken, error)
+	Revoke(ctx context.Context, tenantID, id uuid.UUID) error
+}
+
+// MFARepository stores TOTP authenticators and recovery codes
+type MFARepository interface {
+	// Get returns the user's authenticator, confirmed or pending, or
+	// models.ErrMFANotEnabled
+	Get(ctx context.Context, tenantID, userID uuid.UUID) (*models.UserMFA, error)
+	// SavePending stores a new unconfirmed authenticator, replacing any
+	// pending one; it fails with models.ErrMFAAlreadyEnabled if one is confirmed
+	SavePending(ctx context.Context, mfa *models.UserMFA) error
+	// Confirm enables the pending authenticator, records step as used and
+	// replaces the recovery codes, atomically
+	Confirm(ctx context.Context, tenantID, userID uuid.UUID, step int64, recoveryCodeHashes []string) error
+	// UseStep records a TOTP step as used and clears failures; it reports
+	// false if that step (or a later one) was already used
+	UseStep(ctx context.Context, tenantID, userID uuid.UUID, step int64) (bool, error)
+	// UseRecoveryCode consumes an unused recovery code and clears failures;
+	// it reports false if no unused code has that hash
+	UseRecoveryCode(ctx context.Context, tenantID, userID uuid.UUID, codeHash string) (bool, error)
+	// RecordFailure counts a failed verification and, at maxFailures,
+	// locks verification until lockUntil
+	RecordFailure(ctx context.Context, tenantID, userID uuid.UUID, maxFailures int, lockUntil time.Time) error
+	// ReplaceRecoveryCodes discards all recovery codes and stores new ones
+	ReplaceRecoveryCodes(ctx context.Context, tenantID, userID uuid.UUID, codeHashes []string) error
+	// CountUnusedRecoveryCodes counts recovery codes still available
+	CountUnusedRecoveryCodes(ctx context.Context, tenantID, userID uuid.UUID) (int64, error)
+	// Delete removes the authenticator and recovery codes
+	Delete(ctx context.Context, tenantID, userID uuid.UUID) error
+}
+
+// IdempotencyRepository stores Idempotency-Key records
+type IdempotencyRepository interface {
+	// Begin inserts record unless a live record holds the same (tenant,
+	// principal, key). An expired record, or one left in progress since
+	// before staleBefore (its request died), is replaced. It reports whether
+	// record was stored; if not, existing is the record holding the key.
+	Begin(ctx context.Context, record *models.IdempotencyKey, staleBefore time.Time) (stored bool, existing *models.IdempotencyKey, err error)
+	// Complete saves the response of the request that holds id
+	Complete(ctx context.Context, id uuid.UUID, statusCode int, contentType string, body []byte) error
+	// Delete releases a key so the request can be retried
+	Delete(ctx context.Context, id uuid.UUID) error
+	DeleteExpired(ctx context.Context) error
 }
 
 // SessionRepository defines the interface for SSO session data operations.
@@ -192,6 +253,8 @@ type EmailTemplateRepository interface {
 type EmailQueueRepository interface {
 	Create(ctx context.Context, email *models.EmailQueue) error
 	GetByID(ctx context.Context, tenantID, emailID uuid.UUID) (*models.EmailQueue, error)
+	// GetPendingEmails claims up to limit due emails by moving them to
+	// "sending", so concurrent workers never send the same email twice
 	GetPendingEmails(ctx context.Context, limit int) ([]*models.EmailQueue, error)
 	Update(ctx context.Context, email *models.EmailQueue) error
 	Delete(ctx context.Context, tenantID, emailID uuid.UUID) error
@@ -199,22 +262,29 @@ type EmailQueueRepository interface {
 	GetFailedEmails(ctx context.Context, tenantID uuid.UUID, maxAttempts int) ([]*models.EmailQueue, error)
 }
 
-// EmailVerificationRepository defines the interface for email verification data operations
+// EmailVerificationRepository stores email verification codes by hash
 type EmailVerificationRepository interface {
 	Create(ctx context.Context, verification *models.EmailVerification) error
-	GetByCode(ctx context.Context, tenantID uuid.UUID, code string) (*models.EmailVerification, error)
-	GetByUserID(ctx context.Context, tenantID, userID uuid.UUID) (*models.EmailVerification, error)
-	Update(ctx context.Context, verification *models.EmailVerification) error
-	Delete(ctx context.Context, tenantID uuid.UUID, code string) error
+	GetByCodeHash(ctx context.Context, tenantID uuid.UUID, codeHash string) (*models.EmailVerification, error)
+	// MarkVerified sets verified_at if it is still unset and reports whether
+	// this call did so, making each code single-use under concurrency
+	MarkVerified(ctx context.Context, id uuid.UUID) (bool, error)
+	// DeletePendingByUserID removes the user's unverified codes
+	DeletePendingByUserID(ctx context.Context, tenantID, userID uuid.UUID) error
 	DeleteExpired(ctx context.Context) error
 }
 
-// PasswordResetRepository defines the interface for password reset data operations
+// PasswordResetRepository stores password reset tokens by hash
 type PasswordResetRepository interface {
 	Create(ctx context.Context, reset *models.PasswordReset) error
-	GetByToken(ctx context.Context, tenantID uuid.UUID, token string) (*models.PasswordReset, error)
-	GetByUserID(ctx context.Context, tenantID, userID uuid.UUID) ([]*models.PasswordReset, error)
-	Update(ctx context.Context, reset *models.PasswordReset) error
-	Delete(ctx context.Context, tenantID uuid.UUID, token string) error
+	GetByTokenHash(ctx context.Context, tenantID uuid.UUID, tokenHash string) (*models.PasswordReset, error)
+	// MarkUsed sets used_at if it is still unset and reports whether this
+	// call did so, making each token single-use under concurrency
+	MarkUsed(ctx context.Context, id uuid.UUID) (bool, error)
+	// CountSince counts the user's reset requests created after since
+	CountSince(ctx context.Context, tenantID, userID uuid.UUID, since time.Time) (int64, error)
+	// RevokeUnusedByUserID marks the user's outstanding reset tokens used.
+	// Rows are kept so CountSince still sees them.
+	RevokeUnusedByUserID(ctx context.Context, tenantID, userID uuid.UUID) error
 	DeleteExpired(ctx context.Context) error
 }

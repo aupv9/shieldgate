@@ -110,7 +110,7 @@ func TestSession_CreateThenGet_StoresOnlyTokenHash(t *testing.T) {
 	tenantID, userID := uuid.New(), uuid.New()
 
 	// Act
-	token, created, err := svc.CreateSession(context.Background(), tenantID, userID, "10.0.0.1", "ua")
+	token, created, err := svc.CreateSession(context.Background(), tenantID, userID, nil, "10.0.0.1", "ua")
 	require.NoError(t, err)
 	got, getErr := svc.GetSession(context.Background(), tenantID, token)
 
@@ -127,7 +127,7 @@ func TestSession_OtherTenantOrUnknownToken_NotFound(t *testing.T) {
 	// Arrange
 	svc, _ := newSessionService(time.Hour)
 	tenantID := uuid.New()
-	token, _, err := svc.CreateSession(context.Background(), tenantID, uuid.New(), "", "")
+	token, _, err := svc.CreateSession(context.Background(), tenantID, uuid.New(), nil, "", "")
 	require.NoError(t, err)
 
 	// Act
@@ -145,7 +145,7 @@ func TestSession_Expired_NotFoundAndDeleted(t *testing.T) {
 	// Arrange
 	svc, repo := newSessionService(-time.Second)
 	tenantID := uuid.New()
-	token, _, err := svc.CreateSession(context.Background(), tenantID, uuid.New(), "", "")
+	token, _, err := svc.CreateSession(context.Background(), tenantID, uuid.New(), nil, "", "")
 	require.NoError(t, err)
 
 	// Act
@@ -160,7 +160,7 @@ func TestSession_End_RemovesSession(t *testing.T) {
 	// Arrange
 	svc, _ := newSessionService(time.Hour)
 	tenantID := uuid.New()
-	token, _, err := svc.CreateSession(context.Background(), tenantID, uuid.New(), "", "")
+	token, _, err := svc.CreateSession(context.Background(), tenantID, uuid.New(), nil, "", "")
 	require.NoError(t, err)
 
 	// Act
@@ -199,9 +199,9 @@ func TestSession_CleanupExpired_RemovesOnlyExpired(t *testing.T) {
 	svc, repo := newSessionService(time.Hour)
 	ctx := context.Background()
 	tenantID := uuid.New()
-	_, _, err := svc.CreateSession(ctx, tenantID, uuid.New(), "", "")
+	_, _, err := svc.CreateSession(ctx, tenantID, uuid.New(), nil, "", "")
 	require.NoError(t, err)
-	_, expired, err := svc.CreateSession(ctx, tenantID, uuid.New(), "", "")
+	_, expired, err := svc.CreateSession(ctx, tenantID, uuid.New(), nil, "", "")
 	require.NoError(t, err)
 	repo.sessions[expired.TokenHash].ExpiresAt = time.Now().Add(-time.Minute)
 
