@@ -187,8 +187,8 @@ func idempotencyPrincipal(c *gin.Context) string {
 	if userID, err := GetUserID(c); err == nil && userID != uuid.Nil {
 		return "user:" + userID.String()
 	}
-	if clientID, err := GetClientID(c); err == nil && clientID != uuid.Nil {
-		return "client:" + clientID.String()
+	if clientID, err := GetClientID(c); err == nil {
+		return "client:" + clientID
 	}
 	return "anonymous"
 }
