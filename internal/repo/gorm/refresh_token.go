@@ -42,14 +42,15 @@ func (r *refreshTokenRepository) GetByToken(ctx context.Context, tenantID uuid.U
 	return &refreshToken, nil
 }
 
-func (r *refreshTokenRepository) Revoke(ctx context.Context, tenantID uuid.UUID, token string) error {
-	if err := r.db.WithContext(ctx).
+func (r *refreshTokenRepository) Revoke(ctx context.Context, tenantID uuid.UUID, token string) (bool, error) {
+	result := r.db.WithContext(ctx).
 		Model(&models.RefreshToken{}).
 		Where("tenant_id = ? AND token = ? AND revoked_at IS NULL", tenantID, token).
-		Update("revoked_at", time.Now()).Error; err != nil {
-		return fmt.Errorf("failed to revoke refresh token: %w", err)
+		Update("revoked_at", time.Now())
+	if result.Error != nil {
+		return false, fmt.Errorf("failed to revoke refresh token: %w", result.Error)
 	}
-	return nil
+	return result.RowsAffected == 1, nil
 }
 
 func (r *refreshTokenRepository) DeleteByFamilyID(ctx context.Context, tenantID, familyID uuid.UUID) error {

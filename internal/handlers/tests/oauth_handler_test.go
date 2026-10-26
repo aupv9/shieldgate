@@ -649,6 +649,9 @@ func TestOAuthHandler_HandleToken_AuthorizationCodeGrant_Success(t *testing.T) {
 	assert.Equal(t, "Bearer", response.TokenType)
 	assert.Equal(t, int64(3600), response.ExpiresIn)
 	assert.Equal(t, "test-refresh-token", response.RefreshToken)
+	// RFC 6749 §5.1: token responses must not be cached
+	assert.Equal(t, "no-store", w.Header().Get("Cache-Control"))
+	assert.Equal(t, "no-cache", w.Header().Get("Pragma"))
 
 	// Verify mocks
 	mockClientService.AssertExpectations(t)

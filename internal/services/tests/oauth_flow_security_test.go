@@ -8,6 +8,7 @@ package tests
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -88,6 +89,75 @@ func TestClientService_ValidateClient_BcryptSecret(t *testing.T) {
 	assert.ErrorIs(t, err, models.ErrInvalidClient)
 	_, err = svc.ValidateClient(context.Background(), tenantID, created.ClientID, "")
 	assert.ErrorIs(t, err, models.ErrInvalidClient)
+}
+
+func TestClientService_ValidateClient_CachedSecret_WrongSecretStillRejected(t *testing.T) {
+	// Arrange
+	svc, _ := newClientServiceWithFakes()
+	tenantID := uuid.New()
+	created := createConfidentialClient(t, svc, tenantID)
+	_, err := svc.ValidateClient(context.Background(), tenantID, created.ClientID, created.PlainClientSecret)
+	require.NoError(t, err)
+
+	// Act
+	_, wrongErr := svc.ValidateClient(context.Background(), tenantID, created.ClientID, created.PlainClientSecret+"x")
+	again, againErr := svc.ValidateClient(context.Background(), tenantID, created.ClientID, created.PlainClientSecret)
+
+	// Assert
+	assert.ErrorIs(t, wrongErr, models.ErrInvalidClient, "a cached verification does not admit other secrets")
+	require.NoError(t, againErr)
+	assert.Equal(t, created.ID, again.ID)
+}
+
+func TestClientService_ValidateClient_SecretRotated_OldSecretRejected(t *testing.T) {
+	// Arrange
+	svc, repos := newClientServiceWithFakes()
+	tenantID := uuid.New()
+	created := createConfidentialClient(t, svc, tenantID)
+	_, err := svc.ValidateClient(context.Background(), tenantID, created.ClientID, created.PlainClientSecret)
+	require.NoError(t, err)
+	stored, err := repos.Client.GetByID(context.Background(), tenantID, created.ID)
+	require.NoError(t, err)
+	newHash, err := bcrypt.GenerateFromPassword([]byte("rotated-secret"), bcrypt.MinCost)
+	require.NoError(t, err)
+	stored.ClientSecret = string(newHash)
+	require.NoError(t, repos.Client.Update(context.Background(), stored))
+
+	// Act
+	_, oldErr := svc.ValidateClient(context.Background(), tenantID, created.ClientID, created.PlainClientSecret)
+	_, newErr := svc.ValidateClient(context.Background(), tenantID, created.ClientID, "rotated-secret")
+
+	// Assert
+	assert.ErrorIs(t, oldErr, models.ErrInvalidClient, "rotation invalidates the cached verification")
+	assert.NoError(t, newErr)
+}
+
+func TestClientService_ValidateClient_DeletedClient_RejectedDespiteCache(t *testing.T) {
+	// Arrange
+	svc, _ := newClientServiceWithFakes()
+	tenantID := uuid.New()
+	created := createConfidentialClient(t, svc, tenantID)
+	_, err := svc.ValidateClient(context.Background(), tenantID, created.ClientID, created.PlainClientSecret)
+	require.NoError(t, err)
+	require.NoError(t, svc.Delete(context.Background(), tenantID, created.ID))
+
+	// Act
+	_, err = svc.ValidateClient(context.Background(), tenantID, created.ClientID, created.PlainClientSecret)
+
+	// Assert
+	assert.ErrorIs(t, err, models.ErrInvalidClient)
+}
+
+func createConfidentialClient(t *testing.T, svc services.ClientService, tenantID uuid.UUID) *models.Client {
+	t.Helper()
+	created, err := svc.Create(context.Background(), tenantID, &models.CreateClientRequest{
+		Name:         "Confidential App",
+		RedirectURIs: []string{"https://app.example.com/callback"},
+		GrantTypes:   []string{"client_credentials"},
+		Scopes:       []string{"read"},
+	})
+	require.NoError(t, err)
+	return created
 }
 
 // ---- Token hashing (1.2) + code exchange ----
@@ -178,6 +248,72 @@ func TestRefreshTokens_RotationKeepsScopeAndDetectsReuse(t *testing.T) {
 	assert.ErrorIs(t, err, models.ErrInvalidGrant, "descendant token must be revoked after reuse detection")
 	_, err = svc.ValidateAccessToken(ctx, tenantID, rotated.AccessToken)
 	assert.Error(t, err, "descendant access token must be revoked after reuse detection")
+}
+
+func TestRefreshTokens_ConcurrentReplay_AtMostOneSucceedsAndFamilyRevoked(t *testing.T) {
+	// Arrange
+	svc, _ := newAuthServiceWithFakes()
+	ctx := context.Background()
+	tenantID, clientUUID := uuid.New(), uuid.New()
+	original, err := svc.GenerateTokens(ctx, tenantID, clientUUID, uuid.New(), "read", false)
+	require.NoError(t, err)
+	const attempts = 20
+	results := make(chan *models.TokenResponse, attempts)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+
+	// Act
+	for i := 0; i < attempts; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if tokens, err := svc.RefreshTokens(ctx, tenantID, original.RefreshToken, clientUUID.String(), ""); err == nil {
+				results <- tokens
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+
+	// Assert
+	assert.LessOrEqual(t, len(results), 1, "one refresh token must not fork into several chains")
+	for tokens := range results {
+		_, err := svc.RefreshTokens(ctx, tenantID, tokens.RefreshToken, clientUUID.String(), "")
+		assert.ErrorIs(t, err, models.ErrInvalidGrant, "the replays revoked the family, the winner's chain included")
+	}
+}
+
+// familyRevokedDuringIssue simulates a concurrent replay that revokes the
+// family after the token was claimed but before the new one is stored
+type familyRevokedDuringIssue struct {
+	repo.RefreshTokenRepository
+}
+
+func (r familyRevokedDuringIssue) Create(ctx context.Context, token *models.RefreshToken) error {
+	if err := r.RefreshTokenRepository.DeleteByFamilyID(ctx, token.TenantID, token.FamilyID); err != nil {
+		return err
+	}
+	return r.RefreshTokenRepository.Create(ctx, token)
+}
+
+func TestRefreshTokens_FamilyRevokedWhileIssuing_NewTokensRevoked(t *testing.T) {
+	// Arrange
+	svc, repos := newAuthServiceWithFakes()
+	ctx := context.Background()
+	tenantID, clientUUID := uuid.New(), uuid.New()
+	original, err := svc.GenerateTokens(ctx, tenantID, clientUUID, uuid.New(), "read", false)
+	require.NoError(t, err)
+	repos.RefreshToken = familyRevokedDuringIssue{repos.RefreshToken}
+
+	// Act
+	_, err = svc.RefreshTokens(ctx, tenantID, original.RefreshToken, clientUUID.String(), "")
+
+	// Assert
+	assert.ErrorIs(t, err, models.ErrInvalidGrant)
+	_, accessErr := svc.ValidateAccessToken(ctx, tenantID, original.AccessToken)
+	assert.Error(t, accessErr, "the family stays revoked")
 }
 
 func TestRefreshTokens_ScopeNarrowingAllowed_WideningRejected(t *testing.T) {
@@ -284,21 +420,47 @@ func TestRevokeToken_OtherClientsToken_Ignored(t *testing.T) {
 // ---- Introspection uses hashed lookup ----
 
 func TestIntrospectToken_ActiveThenRevoked(t *testing.T) {
-	svc, _ := newAuthServiceWithFakes()
+	svc, repos := newAuthServiceWithFakes()
 	ctx := context.Background()
-	tenantID, clientUUID := uuid.New(), uuid.New()
+	tenantID, clientUUID, userID := uuid.New(), uuid.New(), uuid.New()
+	require.NoError(t, repos.Client.Create(ctx, &models.Client{ID: clientUUID, TenantID: tenantID, ClientID: "web-app"}))
 
-	tokens, err := svc.GenerateTokens(ctx, tenantID, clientUUID, uuid.New(), "read", false)
+	tokens, err := svc.GenerateTokens(ctx, tenantID, clientUUID, userID, "read", false)
 	require.NoError(t, err)
 
 	result, err := svc.IntrospectToken(ctx, tenantID, tokens.AccessToken)
 	require.NoError(t, err)
 	assert.True(t, result.Active)
 	assert.Equal(t, "read", result.Scope)
-	assert.Equal(t, clientUUID.String(), result.ClientID)
+	assert.Equal(t, "web-app", result.ClientID, "RFC 7662 §2.2: the public client_id, not the internal ID")
+	assert.Equal(t, userID.String(), result.Sub)
+	assert.Equal(t, "Bearer", result.TokenType)
 
 	require.NoError(t, svc.RevokeToken(ctx, tenantID, tokens.AccessToken, "access_token", clientUUID))
 	result, err = svc.IntrospectToken(ctx, tenantID, tokens.AccessToken)
 	require.NoError(t, err)
-	assert.False(t, result.Active)
+	assert.Equal(t, &models.IntrospectionResponse{Active: false}, result, "an inactive token reveals nothing else")
+}
+
+func TestIntrospectToken_Expired_InactiveWithoutMetadata(t *testing.T) {
+	// Arrange
+	svc, repos := newAuthServiceWithFakes()
+	ctx := context.Background()
+	tenantID, clientUUID := uuid.New(), uuid.New()
+	require.NoError(t, repos.Client.Create(ctx, &models.Client{ID: clientUUID, TenantID: tenantID, ClientID: "web-app"}))
+	tokens, err := svc.GenerateTokens(ctx, tenantID, clientUUID, uuid.New(), "read", false)
+	require.NoError(t, err)
+	fake := repos.AccessToken.(*fakeAccessTokenRepo)
+	fake.mu.Lock()
+	for _, record := range fake.tokens {
+		record.ExpiresAt = time.Now().Add(-time.Minute)
+	}
+	fake.mu.Unlock()
+
+	// Act
+	result, err := svc.IntrospectToken(ctx, tenantID, tokens.AccessToken)
+
+	// Assert
+	require.NoError(t, err)
+	assert.Equal(t, &models.IntrospectionResponse{Active: false}, result)
 }
