@@ -125,6 +125,7 @@ func main() {
 	tenantService := services.NewTenantService(repos, logger)
 	userService := services.NewUserService(repos, emailService, cfg.ServerURL, logger)
 	clientService := services.NewClientService(repos, logger)
+	registrationService := services.NewRegistrationService(repos, clientService, cfg.ServerURL, logger)
 	authService := services.NewAuthService(repos, cfg, jwtKeys, logger, services.WithTokenEvents(recorder))
 	sessionService := services.NewSessionService(repos.Session, repos.Consent, cfg.SessionDuration, logger)
 
@@ -225,11 +226,12 @@ func main() {
 	clientHandler := handlers.NewClientHandler(clientService, logger)
 	oauthHandler := handlers.NewOAuthHandler(cfg, tenantService, userService, clientService, authService, sessionService, mfaService, logger).WithRecorder(recorder)
 	mfaHandler := handlers.NewMFAHandler(mfaService, logger).WithRecorder(recorder)
+	registrationHandler := handlers.NewRegistrationHandler(registrationService, logger).WithRecorder(recorder)
 	rbacHandler := handlers.NewRBACHandler(roleService, permissionService, auditService, logger)
 	auditHandler := handlers.NewAuditHandler(auditService, logger)
 
 	// Setup routes
-	setupRoutes(cfg, db, redisClient, router, repos.Idempotency, tenantHandler, userHandler, accountHandler, mfaHandler, clientHandler, oauthHandler, rbacHandler, auditHandler, authService, authz, jwtKeys)
+	setupRoutes(cfg, db, redisClient, router, repos.Idempotency, tenantHandler, userHandler, accountHandler, mfaHandler, registrationHandler, clientHandler, oauthHandler, rbacHandler, auditHandler, authService, authz, jwtKeys)
 
 	// Create HTTP server
 	server := &http.Server{
@@ -326,6 +328,7 @@ func setupRoutes(
 	userHandler *handlers.UserHandler,
 	accountHandler *handlers.AccountHandler,
 	mfaHandler *handlers.MFAHandler,
+	registrationHandler *handlers.RegistrationHandler,
 	clientHandler *handlers.ClientHandler,
 	oauthHandler *handlers.OAuthHandler,
 	rbacHandler *handlers.RBACHandler,
@@ -381,6 +384,9 @@ func setupRoutes(
 	// Self-service pages opened from account emails
 	accountHandler.RegisterRoutes(router.Group(""))
 
+	// Dynamic client registration (RFC 7591) and client self-management (RFC 7592)
+	registrationHandler.RegisterRoutes(router.Group(""))
+
 	// Management API endpoints (versioned)
 	api := router.Group("/v1")
 	api.Use(middleware.RequireAuth(jwtKeys, authService)) // Require authentication + revocation check for management APIs
@@ -400,6 +406,9 @@ func setupRoutes(
 
 		// Client management
 		clientHandler.RegisterRoutes(api.Group("/clients"), authz)
+
+		// Initial access tokens for dynamic client registration
+		registrationHandler.RegisterManagementRoutes(api, authz)
 
 		// RBAC: /v1/roles, /v1/permissions, /v1/users/:user_id/{roles,permissions}
 		rbacHandler.RegisterRoutes(api, authz)

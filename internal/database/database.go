@@ -469,6 +469,27 @@ func Migrate(db *gorm.DB) error {
 		`ALTER TABLE authorization_codes ADD COLUMN IF NOT EXISTS amr JSONB`,
 		`ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS amr JSONB`,
 		`ALTER TABLE device_codes ADD COLUMN IF NOT EXISTS amr JSONB`,
+
+		// Dynamic client registration (RFC 7591/7592)
+		`ALTER TABLE clients ADD COLUMN IF NOT EXISTS token_endpoint_auth_method VARCHAR(50) NOT NULL DEFAULT 'client_secret_basic'`,
+		`UPDATE clients SET token_endpoint_auth_method = 'none' WHERE is_public AND token_endpoint_auth_method = 'client_secret_basic'`,
+		`ALTER TABLE clients ADD COLUMN IF NOT EXISTS dynamically_registered BOOLEAN NOT NULL DEFAULT FALSE`,
+		`ALTER TABLE clients ADD COLUMN IF NOT EXISTS registration_access_token_hash VARCHAR(255)`,
+		`CREATE TABLE IF NOT EXISTS initial_access_tokens (
+			id UUID PRIMARY KEY,
+			tenant_id UUID NOT NULL,
+			token_hash VARCHAR(255) NOT NULL,
+			description VARCHAR(255),
+			scopes JSONB NOT NULL DEFAULT '[]',
+			max_uses INTEGER NOT NULL,
+			uses INTEGER NOT NULL DEFAULT 0,
+			created_by UUID,
+			expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+			revoked_at TIMESTAMP WITH TIME ZONE,
+			created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_initial_access_tokens_hash ON initial_access_tokens(token_hash)`,
+		`CREATE INDEX IF NOT EXISTS idx_initial_access_tokens_tenant ON initial_access_tokens(tenant_id, created_at DESC)`,
 	}
 
 	// Execute each migration
