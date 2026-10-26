@@ -42,6 +42,8 @@ var redactedResponseFields = map[string]bool{
 	"secret":         true,
 	"otpauth_uri":    true,
 	"recovery_codes": true,
+
+	"initial_access_token": true,
 }
 
 // IdempotencyStore persists Idempotency-Key records.

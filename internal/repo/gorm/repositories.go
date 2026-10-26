@@ -30,5 +30,6 @@ func NewRepositories(db *gorm.DB) *repo.Repositories {
 		PasswordReset:     NewPasswordResetRepository(db),
 		Idempotency:       NewIdempotencyRepository(db),
 		MFA:               NewMFARepository(db),
+		InitialAccess:     NewInitialAccessTokenRepository(db),
 	}
 }

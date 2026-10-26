@@ -40,21 +40,22 @@ var (
 	ErrPermissionNotFound = errors.New("permission not found")
 	ErrPermissionDenied   = errors.New("permission denied")
 	// User management errors
-	ErrUserLocked              = errors.New("user account is locked")
-	ErrUserSuspended           = errors.New("user account is suspended")
-	ErrUserPending             = errors.New("user account is pending verification")
-	ErrEmailNotVerified        = errors.New("email not verified")
-	ErrInvalidVerificationCode = errors.New("invalid verification code")
-	ErrVerificationExpired     = errors.New("verification code expired")
-	ErrEmailAlreadyVerified    = errors.New("email already verified")
-	ErrMFANotEnabled           = errors.New("multi-factor authentication is not enabled")
-	ErrMFAAlreadyEnabled       = errors.New("multi-factor authentication is already enabled")
-	ErrMFANotEnrolling         = errors.New("no pending multi-factor enrollment")
-	ErrInvalidMFACode          = errors.New("invalid verification code")
-	ErrMFALocked               = errors.New("too many failed verification attempts")
-	ErrPKCEVerificationFailed  = errors.New("pkce verification failed")
-	ErrAuthCodeAlreadyUsed     = errors.New("authorization code already used")
-	ErrUnauthorizedClient      = errors.New("client is not authorized for this grant type")
+	ErrUserLocked                 = errors.New("user account is locked")
+	ErrUserSuspended              = errors.New("user account is suspended")
+	ErrUserPending                = errors.New("user account is pending verification")
+	ErrEmailNotVerified           = errors.New("email not verified")
+	ErrInvalidVerificationCode    = errors.New("invalid verification code")
+	ErrVerificationExpired        = errors.New("verification code expired")
+	ErrEmailAlreadyVerified       = errors.New("email already verified")
+	ErrMFANotEnabled              = errors.New("multi-factor authentication is not enabled")
+	ErrMFAAlreadyEnabled          = errors.New("multi-factor authentication is already enabled")
+	ErrMFANotEnrolling            = errors.New("no pending multi-factor enrollment")
+	ErrInvalidMFACode             = errors.New("invalid verification code")
+	ErrMFALocked                  = errors.New("too many failed verification attempts")
+	ErrInitialAccessTokenNotFound = errors.New("initial access token not found")
+	ErrPKCEVerificationFailed     = errors.New("pkce verification failed")
+	ErrAuthCodeAlreadyUsed        = errors.New("authorization code already used")
+	ErrUnauthorizedClient         = errors.New("client is not authorized for this grant type")
 	// Device authorization grant errors (RFC 8628 §3.5)
 	ErrDeviceCodeNotFound   = errors.New("device code not found")
 	ErrAuthorizationPending = errors.New("authorization pending")
@@ -250,13 +251,22 @@ type Client struct {
 	RedirectURIs      StringArray `json:"redirect_uris" gorm:"type:jsonb;not null;default:'[]'"`
 	// PostLogoutRedirectURIs are the only URIs RP-initiated logout may
 	// redirect to (OIDC RP-Initiated Logout §3)
-	PostLogoutRedirectURIs StringArray    `json:"post_logout_redirect_uris" gorm:"type:jsonb;not null;default:'[]'"`
-	GrantTypes             StringArray    `json:"grant_types" gorm:"type:jsonb;not null;default:'[]'"`
-	Scopes                 StringArray    `json:"scopes" gorm:"type:jsonb;not null;default:'[]'"`
-	IsPublic               bool           `json:"is_public" gorm:"not null;default:false"`
-	CreatedAt              time.Time      `json:"created_at" gorm:"autoCreateTime"`
-	UpdatedAt              time.Time      `json:"updated_at" gorm:"autoUpdateTime"`
-	DeletedAt              gorm.DeletedAt `json:"-" gorm:"index"`
+	PostLogoutRedirectURIs StringArray `json:"post_logout_redirect_uris" gorm:"type:jsonb;not null;default:'[]'"`
+	GrantTypes             StringArray `json:"grant_types" gorm:"type:jsonb;not null;default:'[]'"`
+	Scopes                 StringArray `json:"scopes" gorm:"type:jsonb;not null;default:'[]'"`
+	IsPublic               bool        `json:"is_public" gorm:"not null;default:false"`
+	// TokenEndpointAuthMethod is registration metadata (RFC 7591 §2): none
+	// for public clients, otherwise client_secret_basic or client_secret_post
+	// (both are accepted at the token endpoint)
+	TokenEndpointAuthMethod string `json:"token_endpoint_auth_method" gorm:"size:50;not null;default:'client_secret_basic'"`
+	// DynamicallyRegistered marks clients created through /oauth/register
+	DynamicallyRegistered bool `json:"dynamically_registered" gorm:"not null;default:false"`
+	// RegistrationAccessToken is the SHA-256 hash of the token that lets a
+	// dynamically registered client manage itself (RFC 7592)
+	RegistrationAccessToken string         `json:"-" gorm:"column:registration_access_token_hash;size:255"`
+	CreatedAt               time.Time      `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt               time.Time      `json:"updated_at" gorm:"autoUpdateTime"`
+	DeletedAt               gorm.DeletedAt `json:"-" gorm:"index"`
 }
 
 // AuthorizationCode represents an OAuth 2.0 authorization code
@@ -541,6 +551,7 @@ type OpenIDConfiguration struct {
 	RevocationEndpoint                         string   `json:"revocation_endpoint,omitempty"`
 	IntrospectionEndpoint                      string   `json:"introspection_endpoint,omitempty"`
 	DeviceAuthorizationEndpoint                string   `json:"device_authorization_endpoint,omitempty"`
+	RegistrationEndpoint                       string   `json:"registration_endpoint,omitempty"`
 	EndSessionEndpoint                         string   `json:"end_session_endpoint,omitempty"`
 	ScopesSupported                            []string `json:"scopes_supported"`
 	ResponseTypesSupported                     []string `json:"response_types_supported"`
@@ -1075,6 +1086,89 @@ type MFARecoveryCodes struct {
 // MFACodeRequest carries a TOTP or recovery code
 type MFACodeRequest struct {
 	Code string `json:"code" binding:"required"`
+}
+
+// InitialAccessToken authorizes dynamic client registration (RFC 7591 §3).
+// Administrators issue it; only its SHA-256 hash is stored. Scopes caps what
+// clients registered with it may request.
+type InitialAccessToken struct {
+	ID          uuid.UUID   `json:"id" gorm:"type:uuid;primary_key"`
+	TenantID    uuid.UUID   `json:"tenant_id" gorm:"type:uuid;not null"`
+	TokenHash   string      `json:"-" gorm:"not null;size:255"`
+	Description string      `json:"description" gorm:"size:255"`
+	Scopes      StringArray `json:"scopes" gorm:"type:jsonb;not null"`
+	MaxUses     int         `json:"max_uses" gorm:"not null"`
+	Uses        int         `json:"uses" gorm:"not null;default:0"`
+	CreatedBy   *uuid.UUID  `json:"created_by" gorm:"type:uuid"`
+	ExpiresAt   time.Time   `json:"expires_at" gorm:"not null"`
+	RevokedAt   *time.Time  `json:"revoked_at"`
+	CreatedAt   time.Time   `json:"created_at"`
+}
+
+// CreateInitialAccessTokenRequest is the management API request
+type CreateInitialAccessTokenRequest struct {
+	Description string   `json:"description"`
+	Scopes      []string `json:"scopes" binding:"required,min=1"`
+	// ExpiresIn is the lifetime in seconds; default one day
+	ExpiresIn int `json:"expires_in"`
+	// MaxUses is how many clients may register with it; default one
+	MaxUses int `json:"max_uses"`
+}
+
+// CreatedInitialAccessToken carries the token value, shown only once
+type CreatedInitialAccessToken struct {
+	*InitialAccessToken
+	Token string `json:"initial_access_token"`
+}
+
+// ClientMetadata is the client metadata of RFC 7591 §2 (plus OIDC
+// RP-Initiated Logout's post_logout_redirect_uris) that ShieldGate
+// supports. Other metadata in a request is ignored, as §2 requires.
+type ClientMetadata struct {
+	ClientID                string   `json:"client_id,omitempty"`
+	RedirectURIs            []string `json:"redirect_uris,omitempty"`
+	PostLogoutRedirectURIs  []string `json:"post_logout_redirect_uris,omitempty"`
+	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method,omitempty"`
+	GrantTypes              []string `json:"grant_types,omitempty"`
+	ResponseTypes           []string `json:"response_types,omitempty"`
+	ClientName              string   `json:"client_name,omitempty"`
+	Scope                   string   `json:"scope,omitempty"`
+}
+
+// ClientRegistrationResponse is the client information response of RFC 7591
+// §3.2.1 and RFC 7592 §3. ClientSecret and RegistrationAccessToken appear
+// only in the registration response.
+type ClientRegistrationResponse struct {
+	ClientMetadata
+	ClientID                string `json:"client_id"`
+	ClientSecret            string `json:"client_secret,omitempty"`
+	ClientIDIssuedAt        int64  `json:"client_id_issued_at"`
+	ClientSecretExpiresAt   *int64 `json:"client_secret_expires_at,omitempty"`
+	RegistrationAccessToken string `json:"registration_access_token,omitempty"`
+	RegistrationClientURI   string `json:"registration_client_uri"`
+}
+
+// Token endpoint authentication methods (RFC 7591 §2)
+const (
+	TokenEndpointAuthNone              = "none"
+	TokenEndpointAuthClientSecretBasic = "client_secret_basic"
+	TokenEndpointAuthClientSecretPost  = "client_secret_post"
+)
+
+// Registration error codes (RFC 7591 §3.2.2)
+const (
+	RegistrationErrorInvalidRedirectURI    = "invalid_redirect_uri"
+	RegistrationErrorInvalidClientMetadata = "invalid_client_metadata"
+)
+
+// RegistrationError is a client registration error reported to the client
+type RegistrationError struct {
+	Code        string
+	Description string
+}
+
+func (e *RegistrationError) Error() string {
+	return e.Code + ": " + e.Description
 }
 
 // Token events reported by the auth service

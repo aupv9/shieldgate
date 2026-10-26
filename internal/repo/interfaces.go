@@ -60,6 +60,7 @@ type AccessTokenRepository interface {
 	DeleteExpired(ctx context.Context) error
 	DeleteByUserID(ctx context.Context, tenantID, userID uuid.UUID) error
 	DeleteByFamilyID(ctx context.Context, tenantID, familyID uuid.UUID) error
+	DeleteByClientID(ctx context.Context, tenantID, clientID uuid.UUID) error
 }
 
 // RefreshTokenRepository defines the interface for refresh token data operations
@@ -73,6 +74,7 @@ type RefreshTokenRepository interface {
 	DeleteExpired(ctx context.Context) error
 	DeleteByUserID(ctx context.Context, tenantID, userID uuid.UUID) error
 	DeleteByFamilyID(ctx context.Context, tenantID, familyID uuid.UUID) error
+	DeleteByClientID(ctx context.Context, tenantID, clientID uuid.UUID) error
 }
 
 // DeviceCodeRepository defines the interface for device authorization grant
@@ -108,6 +110,21 @@ type Repositories struct {
 	PasswordReset     PasswordResetRepository
 	Idempotency       IdempotencyRepository
 	MFA               MFARepository
+	InitialAccess     InitialAccessTokenRepository
+}
+
+// InitialAccessTokenRepository stores registration initial access tokens
+type InitialAccessTokenRepository interface {
+	Create(ctx context.Context, token *models.InitialAccessToken) error
+	// GetByHash returns the token with that hash, live or not, or
+	// models.ErrInitialAccessTokenNotFound
+	GetByHash(ctx context.Context, tenantID uuid.UUID, tokenHash string) (*models.InitialAccessToken, error)
+	// Consume counts one use of a live token (unrevoked, unexpired, with
+	// uses left) atomically and returns it, or
+	// models.ErrInitialAccessTokenNotFound
+	Consume(ctx context.Context, tenantID uuid.UUID, tokenHash string) (*models.InitialAccessToken, error)
+	List(ctx context.Context, tenantID uuid.UUID) ([]*models.InitialAccessToken, error)
+	Revoke(ctx context.Context, tenantID, id uuid.UUID) error
 }
 
 // MFARepository stores TOTP authenticators and recovery codes

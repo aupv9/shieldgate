@@ -136,6 +136,25 @@ type Services struct {
 	Email      EmailService
 }
 
+// RegistrationService implements dynamic client registration (RFC 7591)
+// and client self-management (RFC 7592)
+type RegistrationService interface {
+	// CreateInitialAccessToken issues a token that lets clients register;
+	// its value is returned only here
+	CreateInitialAccessToken(ctx context.Context, tenantID uuid.UUID, createdBy *uuid.UUID, req *models.CreateInitialAccessTokenRequest) (*models.CreatedInitialAccessToken, error)
+	ListInitialAccessTokens(ctx context.Context, tenantID uuid.UUID) ([]*models.InitialAccessToken, error)
+	RevokeInitialAccessToken(ctx context.Context, tenantID, id uuid.UUID) error
+
+	// Register creates a client; errors are *models.RegistrationError for
+	// bad metadata and models.ErrInvalidToken for a bad initial access token
+	Register(ctx context.Context, tenantID uuid.UUID, initialAccessToken string, meta *models.ClientMetadata) (*models.ClientRegistrationResponse, error)
+	// Read, Update and Delete authenticate with the registration access
+	// token returned by Register
+	Read(ctx context.Context, tenantID uuid.UUID, clientID, registrationToken string) (*models.ClientRegistrationResponse, error)
+	Update(ctx context.Context, tenantID uuid.UUID, clientID, registrationToken string, meta *models.ClientMetadata) (*models.ClientRegistrationResponse, error)
+	Delete(ctx context.Context, tenantID uuid.UUID, clientID, registrationToken string) error
+}
+
 // TokenEventSink receives token events (issuance, revocation, replay
 // detection) for metrics and the audit log; observability.Recorder
 // implements it. Implementations must not fail the token operation.
