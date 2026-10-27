@@ -935,6 +935,29 @@ ID Token là JWT chứa thông tin về người dùng:
 }
 ```
 
+### Access Token
+
+Access token là JWT theo RFC 9068 (header `typ: at+jwt`), resource server có
+thể tự xác minh bằng JWKS:
+
+```json
+{
+  "iss": "https://auth.your-domain.com",
+  "aud": "https://auth.your-domain.com",
+  "sub": "123e4567-e89b-12d3-a456-426614174000",
+  "client_id": "your_client_id",
+  "scope": "openid profile email",
+  "jti": "5f1c6d0e-8a43-4b8e-9c1a-2d7f3e9b6a10",
+  "iat": 1642690800,
+  "exp": 1642694400,
+  "tenant_id": "c0f0c0f0-0000-4000-8000-000000000001",
+  "user_id": "123e4567-e89b-12d3-a456-426614174000"
+}
+```
+
+Với client credentials, `sub` là `client_id` của client và không có `user_id`.
+Resource server cần kiểm `typ` là `at+jwt` để không nhận nhầm ID token.
+
 ### UserInfo Endpoint
 
 Client có thể lấy thêm thông tin về người dùng từ UserInfo endpoint:

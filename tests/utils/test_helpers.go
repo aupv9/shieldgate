@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm"
 
 	"shieldgate/config"
+	"shieldgate/internal/jwtkeys"
 	"shieldgate/internal/models"
 )
 
@@ -62,11 +63,12 @@ func CreateTestUserWithPassword(password string) *models.User {
 	}
 }
 
-// CreateTestJWT generates a valid signed JWT for use in tests.
+// CreateTestJWT generates a valid signed access token (RFC 9068 shape) for
+// use in tests; clientID stands in for the public client_id.
 func CreateTestJWT(cfg *config.Config, userID, clientID, tenantID uuid.UUID, scope string) string {
 	claims := &models.JWTClaims{
 		Sub:      userID.String(),
-		Aud:      clientID.String(),
+		Aud:      cfg.ServerURL,
 		Iss:      cfg.ServerURL,
 		Exp:      time.Now().Add(cfg.AccessTokenDuration).Unix(),
 		Iat:      time.Now().Unix(),
@@ -76,6 +78,7 @@ func CreateTestJWT(cfg *config.Config, userID, clientID, tenantID uuid.UUID, sco
 		UserID:   userID.String(),
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	token.Header["typ"] = jwtkeys.TypeAccessToken
 	signed, _ := token.SignedString([]byte(cfg.JWTSecret))
 	return signed
 }
@@ -84,7 +87,7 @@ func CreateTestJWT(cfg *config.Config, userID, clientID, tenantID uuid.UUID, sco
 func CreateExpiredJWT(cfg *config.Config, userID, clientID, tenantID uuid.UUID) string {
 	claims := &models.JWTClaims{
 		Sub:      userID.String(),
-		Aud:      clientID.String(),
+		Aud:      cfg.ServerURL,
 		Iss:      cfg.ServerURL,
 		Exp:      time.Now().Add(-1 * time.Hour).Unix(), // expired
 		Iat:      time.Now().Add(-2 * time.Hour).Unix(),
@@ -93,6 +96,7 @@ func CreateExpiredJWT(cfg *config.Config, userID, clientID, tenantID uuid.UUID) 
 		UserID:   userID.String(),
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	token.Header["typ"] = jwtkeys.TypeAccessToken
 	signed, _ := token.SignedString([]byte(cfg.JWTSecret))
 	return signed
 }
@@ -101,7 +105,7 @@ func CreateExpiredJWT(cfg *config.Config, userID, clientID, tenantID uuid.UUID) 
 func CreateTamperedJWT(cfg *config.Config, userID, clientID, tenantID uuid.UUID) string {
 	claims := &models.JWTClaims{
 		Sub:      userID.String(),
-		Aud:      clientID.String(),
+		Aud:      cfg.ServerURL,
 		Iss:      cfg.ServerURL,
 		Exp:      time.Now().Add(cfg.AccessTokenDuration).Unix(),
 		Iat:      time.Now().Unix(),
@@ -110,6 +114,7 @@ func CreateTamperedJWT(cfg *config.Config, userID, clientID, tenantID uuid.UUID)
 		UserID:   userID.String(),
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	token.Header["typ"] = jwtkeys.TypeAccessToken
 	signed, _ := token.SignedString([]byte("wrong-secret-key-that-does-not-match"))
 	return signed
 }
