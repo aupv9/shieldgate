@@ -36,6 +36,12 @@ const (
 	AlgHS256 = "HS256"
 )
 
+// TypeAccessToken is the typ header of JWT access tokens (RFC 9068 §2.1).
+// It keeps an access token from being accepted where an ID token is
+// expected, and the other way around, although both carry the same issuer
+// and signing key.
+const TypeAccessToken = "at+jwt"
+
 // minRSABits is the smallest RSA modulus accepted (NIST SP 800-131A)
 const minRSABits = 2048
 
@@ -109,7 +115,13 @@ func (ks *KeySet) ActiveKeyID() string {
 
 // Sign signs claims with the active key, setting the kid header
 func (ks *KeySet) Sign(claims jwt.Claims) (string, error) {
+	return ks.SignTyped(claims, "JWT")
+}
+
+// SignTyped is Sign with the given typ header, such as TypeAccessToken
+func (ks *KeySet) SignTyped(claims jwt.Claims, typ string) (string, error) {
 	token := jwt.NewWithClaims(jwt.GetSigningMethod(ks.active.Alg), claims)
+	token.Header["typ"] = typ
 	if ks.active.ID != "" {
 		token.Header["kid"] = ks.active.ID
 	}
@@ -123,6 +135,15 @@ func (ks *KeySet) Sign(claims jwt.Claims) (string, error) {
 func (ks *KeySet) Parse(tokenString string, claims jwt.Claims, opts ...jwt.ParserOption) (*jwt.Token, error) {
 	opts = append([]jwt.ParserOption{jwt.WithValidMethods(ks.algs)}, opts...)
 	return jwt.ParseWithClaims(tokenString, claims, ks.keyfunc, opts...)
+}
+
+// HasType reports whether a parsed token's typ header is typ. JOSE media
+// types are case-insensitive and may carry an "application/" prefix
+// (RFC 7515 §4.1.9).
+func HasType(token *jwt.Token, typ string) bool {
+	got, _ := token.Header["typ"].(string)
+	got = strings.ToLower(got)
+	return strings.TrimPrefix(got, "application/") == strings.ToLower(typ)
 }
 
 // TokenHash computes an OIDC token hash such as at_hash (OIDC Core §3.1.3.6):

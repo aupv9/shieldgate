@@ -122,6 +122,25 @@ upload the REVIEW screenshots, and submit the results to the OpenID Foundation.
 | RFC 6749 §5.1 | Token responses had no `Cache-Control: no-store` / `Pragma: no-cache` | Added to the token, introspection and device authorization endpoints |
 | RFC 7662 §2.2 | Introspection returned the internal UUID as `client_id`, and an expired token's metadata alongside `active: false` | Public `client_id`, `sub`, `token_type`, `iss`; inactive tokens return only `{"active": false}` |
 
-The access token JWT still carries the client's internal UUID in `client_id`
-and `aud`. It is ShieldGate's own format (not RFC 9068) and the
-authentication middleware relies on it; changing it is a separate task.
+## Access token format (RFC 9068)
+
+Access tokens are JWTs in the RFC 9068 shape, so a resource server can
+validate them with the JWKS alone:
+
+| Header / claim | Value |
+|---|---|
+| `typ` | `at+jwt`, which an ID token never has, so neither can be used in place of the other |
+| `iss` | the issuer |
+| `aud` | the issuer as well: without resource indicators (RFC 8707), ShieldGate's own APIs (UserInfo, management) are the only resource server |
+| `client_id` | the client's public `client_id` |
+| `sub` | the user, or the client's `client_id` when there is no user (client credentials) |
+| `jti`, `iat`, `exp`, `scope` | as usual; `tenant_id` and `user_id` are ShieldGate extensions |
+
+Token exchange records the acting client's public `client_id` in `act.sub`.
+ShieldGate rejects access tokens without `typ: at+jwt` or with another
+audience, and an `id_token_hint` typed `at+jwt`.
+
+Before this format, `client_id`, `aud` and the client credentials `sub` held
+the client's internal database ID. Access tokens issued in the old format are
+rejected after upgrading, so clients get `401` until they refresh or request a
+new token; refresh tokens are unaffected.

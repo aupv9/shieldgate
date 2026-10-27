@@ -13,6 +13,7 @@ import (
 
 	"shieldgate/config"
 	"shieldgate/internal/jwtkeys"
+	"shieldgate/internal/models"
 	"shieldgate/tests/utils"
 )
 
@@ -288,4 +289,33 @@ func TestCreateTestJWT_ExpiresCorrectly(t *testing.T) {
 	req2.Header.Set("Authorization", "Bearer "+expiredToken)
 	r2.ServeHTTP(w2, req2)
 	assert.Equal(t, http.StatusUnauthorized, w2.Code)
+}
+
+func TestRequireAuth_PublicClientID_AvailableToHandlers(t *testing.T) {
+	// Arrange
+	cfg := testConfig()
+	keys := jwtkeys.NewHMAC(cfg.JWTSecret)
+	token, err := keys.SignTyped(&models.JWTClaims{
+		Sub: "web-app", Aud: cfg.ServerURL, Iss: cfg.ServerURL, TenantID: uuid.NewString(),
+		Exp: time.Now().Add(time.Hour).Unix(), ClientID: "web-app",
+	}, jwtkeys.TypeAccessToken)
+	require.NoError(t, err)
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(RequireAuth(keys))
+	r.GET("/protected", func(c *gin.Context) {
+		clientID, err := GetClientID(c)
+		require.NoError(t, err)
+		c.String(http.StatusOK, idempotencyPrincipal(c)+" "+clientID)
+	})
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/protected", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	// Act
+	r.ServeHTTP(w, req)
+
+	// Assert
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "client:web-app web-app", w.Body.String())
 }

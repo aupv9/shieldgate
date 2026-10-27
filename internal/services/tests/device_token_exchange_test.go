@@ -182,11 +182,11 @@ func exchangeClient(tenantID uuid.UUID, scopes ...string) *models.Client {
 }
 
 func TestExchangeToken_HappyPath_DelegationWithActClaim(t *testing.T) {
-	svc, _ := newAuthServiceWithFakes()
+	svc, repos := newAuthServiceWithFakes()
 	ctx := context.Background()
 	tenantID := uuid.New()
 	userID := uuid.New()
-	originClient := uuid.New()
+	originClient := registerClient(t, repos, tenantID, uuid.New()).ID
 	exchClient := exchangeClient(tenantID, "read", "write")
 
 	subject, err := svc.GenerateTokens(ctx, tenantID, originClient, userID, "read write", false)
@@ -207,7 +207,8 @@ func TestExchangeToken_HappyPath_DelegationWithActClaim(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, userID.String(), claims.Sub, "subject must remain the original user")
 	require.NotNil(t, claims.Act, "act claim must record the acting client")
-	assert.Equal(t, exchClient.ID.String(), claims.Act.Sub)
+	assert.Equal(t, "backend-svc", claims.Act.Sub, "the actor is named by its public client_id")
+	assert.Equal(t, "backend-svc", claims.ClientID)
 
 	// The exchanged token is a live, validatable access token
 	validated, err := svc.ValidateAccessToken(ctx, tenantID, result.AccessToken)
@@ -216,12 +217,13 @@ func TestExchangeToken_HappyPath_DelegationWithActClaim(t *testing.T) {
 }
 
 func TestExchangeToken_ScopeBeyondSubjectToken_Rejected(t *testing.T) {
-	svc, _ := newAuthServiceWithFakes()
+	svc, repos := newAuthServiceWithFakes()
 	ctx := context.Background()
 	tenantID := uuid.New()
 	exchClient := exchangeClient(tenantID, "read", "write", "admin")
+	origin := registerClient(t, repos, tenantID, uuid.New())
 
-	subject, err := svc.GenerateTokens(ctx, tenantID, uuid.New(), uuid.New(), "read", false)
+	subject, err := svc.GenerateTokens(ctx, tenantID, origin.ID, uuid.New(), "read", false)
 	require.NoError(t, err)
 
 	_, err = svc.ExchangeToken(ctx, tenantID, exchClient, subject.AccessToken, models.TokenTypeAccessToken, "read admin")
@@ -229,12 +231,13 @@ func TestExchangeToken_ScopeBeyondSubjectToken_Rejected(t *testing.T) {
 }
 
 func TestExchangeToken_ScopeBeyondClientRegistration_Rejected(t *testing.T) {
-	svc, _ := newAuthServiceWithFakes()
+	svc, repos := newAuthServiceWithFakes()
 	ctx := context.Background()
 	tenantID := uuid.New()
 	exchClient := exchangeClient(tenantID, "read") // client may only hold "read"
+	origin := registerClient(t, repos, tenantID, uuid.New())
 
-	subject, err := svc.GenerateTokens(ctx, tenantID, uuid.New(), uuid.New(), "read write", false)
+	subject, err := svc.GenerateTokens(ctx, tenantID, origin.ID, uuid.New(), "read write", false)
 	require.NoError(t, err)
 
 	// Default scope = subject scope "read write" — outside client registration
@@ -257,10 +260,10 @@ func TestExchangeToken_InvalidSubjectToken_Rejected(t *testing.T) {
 }
 
 func TestExchangeToken_RevokedSubjectToken_Rejected(t *testing.T) {
-	svc, _ := newAuthServiceWithFakes()
+	svc, repos := newAuthServiceWithFakes()
 	ctx := context.Background()
 	tenantID := uuid.New()
-	originClient := uuid.New()
+	originClient := registerClient(t, repos, tenantID, uuid.New()).ID
 	exchClient := exchangeClient(tenantID, "read")
 
 	subject, err := svc.GenerateTokens(ctx, tenantID, originClient, uuid.New(), "read", false)

@@ -163,8 +163,8 @@ func RequireAuth(keys *jwtkeys.KeySet, validators ...AccessTokenValidator) gin.H
 		if userID, err := uuid.Parse(claims.UserID); err == nil {
 			c.Set(UserIDKey, userID)
 		}
-		if clientID, err := uuid.Parse(claims.ClientID); err == nil {
-			c.Set(ClientIDKey, clientID)
+		if claims.ClientID != "" {
+			c.Set(ClientIDKey, claims.ClientID)
 		}
 		if tenantID, err := uuid.Parse(claims.TenantID); err == nil {
 			c.Set(TenantIDKey, tenantID)
@@ -208,16 +208,17 @@ func GetUserID(c *gin.Context) (uuid.UUID, error) {
 	return uuid.Nil, fmt.Errorf("invalid user ID type in context")
 }
 
-// GetClientID gets client ID from gin context (set by RequireAuth middleware)
-func GetClientID(c *gin.Context) (uuid.UUID, error) {
+// GetClientID gets the public client_id of the access token's client from
+// gin context (set by RequireAuth middleware)
+func GetClientID(c *gin.Context) (string, error) {
 	clientID, exists := c.Get(ClientIDKey)
 	if !exists {
-		return uuid.Nil, fmt.Errorf("client ID not found in context")
+		return "", fmt.Errorf("client ID not found in context")
 	}
-	if id, ok := clientID.(uuid.UUID); ok {
+	if id, ok := clientID.(string); ok && id != "" {
 		return id, nil
 	}
-	return uuid.Nil, fmt.Errorf("invalid client ID type in context")
+	return "", fmt.Errorf("invalid client ID type in context")
 }
 
 // extractTenantID extracts tenant ID from various request sources

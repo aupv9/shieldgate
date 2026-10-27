@@ -308,3 +308,33 @@ func TestLoad_Options(t *testing.T) {
 		assert.ErrorContains(t, err, "unsupported signing alg")
 	})
 }
+
+func TestSignTyped_AccessToken_TypHeaderDistinguishesFromJWT(t *testing.T) {
+	// Arrange
+	ks := mustKeySet(t, mustGenerate(t, jwtkeys.AlgRS256))
+
+	// Act
+	accessToken, err := ks.SignTyped(claims(), jwtkeys.TypeAccessToken)
+	require.NoError(t, err)
+	plain, err := ks.Sign(claims())
+	require.NoError(t, err)
+	parsedAccess, err := ks.Parse(accessToken, jwt.MapClaims{})
+	require.NoError(t, err)
+	parsedPlain, err := ks.Parse(plain, jwt.MapClaims{})
+	require.NoError(t, err)
+
+	// Assert
+	assert.Equal(t, "at+jwt", parsedAccess.Header["typ"])
+	assert.True(t, jwtkeys.HasType(parsedAccess, jwtkeys.TypeAccessToken))
+	assert.False(t, jwtkeys.HasType(parsedPlain, jwtkeys.TypeAccessToken))
+}
+
+func TestHasType_MediaTypeForms_MatchCaseInsensitivelyWithOptionalPrefix(t *testing.T) {
+	for typ, want := range map[string]bool{
+		"at+jwt": true, "AT+JWT": true, "application/at+jwt": true,
+		"JWT": false, "": false, "at+jwt2": false,
+	} {
+		token := &jwt.Token{Header: map[string]interface{}{"typ": typ}}
+		assert.Equal(t, want, jwtkeys.HasType(token, jwtkeys.TypeAccessToken), typ)
+	}
+}

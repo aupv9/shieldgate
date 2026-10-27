@@ -159,10 +159,15 @@ func (s *authServiceImpl) ExchangeAuthorizationCode(ctx context.Context, tenantI
 		}
 	}
 
+	client, err := s.repos.Client.GetByID(ctx, tenantID, authCode.ClientID)
+	if err != nil {
+		return nil, models.ErrInvalidGrant
+	}
+
 	// Generate tokens; the family is keyed by the authorization code so a
 	// later code replay can revoke everything issued from it
 	auth := authContext{grantType: models.GrantTypeAuthorizationCode, authTime: authCode.AuthTime, amr: authCode.AMR, nonce: authCode.Nonce}
-	tokenResponse, err := s.issueTokens(ctx, tenantID, authCode.ClientID, authCode.UserID, authCode.Scope, authCode.ID, true, true, auth)
+	tokenResponse, err := s.issueTokens(ctx, tenantID, client, authCode.UserID, authCode.Scope, authCode.ID, true, true, auth)
 	if err != nil {
 		return nil, err
 	}
@@ -177,13 +182,17 @@ func (s *authServiceImpl) ExchangeAuthorizationCode(ctx context.Context, tenantI
 }
 
 func (s *authServiceImpl) GenerateTokens(ctx context.Context, tenantID, clientID, userID uuid.UUID, scope string, includeIDToken bool) (*models.TokenResponse, error) {
-	return s.issueTokens(ctx, tenantID, clientID, userID, scope, uuid.New(), true, includeIDToken, authContext{})
+	client, err := s.repos.Client.GetByID(ctx, tenantID, clientID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load client: %w", err)
+	}
+	return s.issueTokens(ctx, tenantID, client, userID, scope, uuid.New(), true, includeIDToken, authContext{})
 }
 
 func (s *authServiceImpl) GenerateClientCredentialsTokens(ctx context.Context, tenantID uuid.UUID, client *models.Client, scope string) (*models.TokenResponse, error) {
 	// RFC 6749 §4.4.3: no refresh token for the client credentials grant.
-	// The subject of the token is the client itself.
-	accessToken, err := s.generateJWTWithSubject(client.ID.String(), tenantID, client.ID, uuid.Nil, scope, s.config.AccessTokenDuration)
+	// The subject of the token is the client itself (RFC 9068 §2.2).
+	accessToken, err := s.generateJWT(tenantID, client, uuid.Nil, scope, s.config.AccessTokenDuration)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate access token: %w", err)
 	}
@@ -217,9 +226,11 @@ func (s *authServiceImpl) GenerateClientCredentialsTokens(ctx context.Context, t
 // issueTokens creates an access token (and optionally a refresh token) within
 // the given rotation family, plus an ID token when requested and the scope
 // includes openid. Only token hashes are persisted.
-func (s *authServiceImpl) issueTokens(ctx context.Context, tenantID, clientID, userID uuid.UUID, scope string, familyID uuid.UUID, includeRefreshToken, includeIDToken bool, auth authContext) (*models.TokenResponse, error) {
+func (s *authServiceImpl) issueTokens(ctx context.Context, tenantID uuid.UUID, client *models.Client, userID uuid.UUID, scope string, familyID uuid.UUID, includeRefreshToken, includeIDToken bool, auth authContext) (*models.TokenResponse, error) {
+	clientID := client.ID
+
 	// Generate access token
-	accessToken, err := s.generateJWT(tenantID, clientID, userID, scope, s.config.AccessTokenDuration)
+	accessToken, err := s.generateJWT(tenantID, client, userID, scope, s.config.AccessTokenDuration)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate access token: %w", err)
 	}
@@ -279,10 +290,6 @@ func (s *authServiceImpl) issueTokens(ctx context.Context, tenantID, clientID, u
 		}
 		// The audience is the client's public client_id, which is what the
 		// relying party compares aud against
-		client, err := s.repos.Client.GetByID(ctx, tenantID, clientID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load client for ID token: %w", err)
-		}
 		idToken, err := s.GenerateIDToken(ctx, user, &models.IDTokenParams{
 			ClientID:    client.ClientID,
 			Scope:       scope,
@@ -339,6 +346,11 @@ func (s *authServiceImpl) RefreshTokens(ctx context.Context, tenantID uuid.UUID,
 		scope = requestedScope
 	}
 
+	client, err := s.repos.Client.GetByID(ctx, tenantID, token.ClientID)
+	if err != nil {
+		return nil, models.ErrInvalidGrant
+	}
+
 	// Rotate: claim the old token before issuing new ones. The claim is an
 	// atomic conditional update, so of concurrent requests presenting the
 	// same token exactly one gets new tokens; the others are replays.
@@ -353,7 +365,7 @@ func (s *authServiceImpl) RefreshTokens(ctx context.Context, tenantID uuid.UUID,
 
 	// Issue new tokens in the same family. No nonce on refresh; auth_time
 	// stays the original authentication time
-	tokenResponse, err := s.issueTokens(ctx, tenantID, token.ClientID, token.UserID, scope, token.FamilyID, true, true, authContext{grantType: models.GrantTypeRefreshToken, authTime: token.AuthTime, amr: token.AMR})
+	tokenResponse, err := s.issueTokens(ctx, tenantID, client, token.UserID, scope, token.FamilyID, true, true, authContext{grantType: models.GrantTypeRefreshToken, authTime: token.AuthTime, amr: token.AMR})
 	if err != nil {
 		return nil, err
 	}
@@ -473,7 +485,7 @@ func (s *authServiceImpl) IntrospectToken(ctx context.Context, tenantID uuid.UUI
 
 func (s *authServiceImpl) ValidateAccessToken(ctx context.Context, tenantID uuid.UUID, tokenString string) (*models.JWTClaims, error) {
 	token, err := s.keys.Parse(tokenString, &models.JWTClaims{},
-		jwt.WithIssuer(s.config.ServerURL), jwt.WithExpirationRequired())
+		jwt.WithIssuer(s.config.ServerURL), jwt.WithAudience(s.accessTokenAudience()), jwt.WithExpirationRequired())
 	if err != nil {
 		return nil, err
 	}
@@ -481,6 +493,11 @@ func (s *authServiceImpl) ValidateAccessToken(ctx context.Context, tenantID uuid
 	claims, ok := token.Claims.(*models.JWTClaims)
 	if !ok || !token.Valid {
 		return nil, fmt.Errorf("invalid token")
+	}
+	// An ID token is signed by the same key, so the typ header is what keeps
+	// it from being accepted as an access token (RFC 9068 §4)
+	if !jwtkeys.HasType(token, jwtkeys.TypeAccessToken) {
+		return nil, models.ErrInvalidToken
 	}
 
 	// Validate tenant
@@ -614,7 +631,8 @@ func (s *authServiceImpl) ParseIDTokenHint(ctx context.Context, idToken string) 
 	// An id_token_hint may be expired (OIDC RP-Initiated Logout §2), so only
 	// the signature and issuer are checked, not the time-based claims
 	claims := &models.IDTokenClaims{}
-	if _, err := s.keys.Parse(idToken, claims, jwt.WithoutClaimsValidation()); err != nil {
+	token, err := s.keys.Parse(idToken, claims, jwt.WithoutClaimsValidation())
+	if err != nil || jwtkeys.HasType(token, jwtkeys.TypeAccessToken) {
 		return nil, models.ErrInvalidToken
 	}
 	if claims.Iss != s.config.ServerURL {
@@ -664,27 +682,36 @@ func (s *authServiceImpl) CleanupExpiredTokens(ctx context.Context) error {
 
 // Helper methods
 
-func (s *authServiceImpl) generateJWT(tenantID, clientID, userID uuid.UUID, scope string, duration time.Duration) (string, error) {
-	return s.generateJWTWithSubject(userID.String(), tenantID, clientID, userID, scope, duration)
-}
-
-func (s *authServiceImpl) generateJWTWithSubject(subject string, tenantID, clientID, userID uuid.UUID, scope string, duration time.Duration) (string, error) {
+// generateJWT signs an access token in the RFC 9068 shape. client_id is the
+// client's public identifier; the subject is the user, or the client itself
+// when there is no user. aud is ShieldGate, the resource server these tokens
+// are issued for.
+func (s *authServiceImpl) generateJWT(tenantID uuid.UUID, client *models.Client, userID uuid.UUID, scope string, duration time.Duration) (string, error) {
+	now := time.Now()
 	claims := &models.JWTClaims{
 		Jti:      uuid.NewString(),
-		Sub:      subject,
-		Aud:      clientID.String(),
+		Sub:      client.ClientID,
+		Aud:      s.accessTokenAudience(),
 		Iss:      s.config.ServerURL,
-		Exp:      time.Now().Add(duration).Unix(),
-		Iat:      time.Now().Unix(),
+		Exp:      now.Add(duration).Unix(),
+		Iat:      now.Unix(),
 		TenantID: tenantID.String(),
 		Scope:    scope,
-		ClientID: clientID.String(),
+		ClientID: client.ClientID,
 	}
 	if userID != uuid.Nil {
+		claims.Sub = userID.String()
 		claims.UserID = userID.String()
 	}
 
-	return s.keys.Sign(claims)
+	return s.keys.SignTyped(claims, jwtkeys.TypeAccessToken)
+}
+
+// accessTokenAudience is the aud of every access token. Without resource
+// indicators (RFC 8707) the only resource server is ShieldGate itself
+// (UserInfo and the management APIs), identified by its issuer URL.
+func (s *authServiceImpl) accessTokenAudience() string {
+	return s.config.ServerURL
 }
 
 func (s *authServiceImpl) generateRandomString(length int) (string, error) {
